@@ -1,11 +1,11 @@
-# Correção do KMZ com coordenadas
+# Rota customizável e exportável
 
-- [x] Auditar a estrutura atual do `buildKmz` e o `KmzExporter.kt` original.
-- [x] Confirmar onde o Android grava coordenadas, índices, alturas e ações.
-- [x] Incluir a geometria do limite e os waypoints calculados no XML correto.
-- [x] Garantir que todos os waypoints tenham `<coordinates>longitude,latitude,altitude</coordinates>`.
-- [x] Validar que o KMZ contém `wpmz/template.kml` e `wpmz/waylines.wpml` não vazios.
-- [x] Validar contagem de coordenadas antes de permitir o download.
-- [x] Incluir `wpmz/coordinates.csv` para conferência humana das coordenadas.
-- [x] Executar TypeScript e build de produção.
-- [ ] Validar a importação do KMZ em um DJI Fly real antes de uso operacional.
+- [x] Auditar `generateRoute`, estado de missão e componente Leaflet atual.
+- [x] Usar a rota calculada diretamente como sobreposição no mapa após aplicar o plano.
+- [x] Exibir linhas de varredura e waypoints no mapa após aplicar o plano.
+- [x] Adicionar orientação da rota, espaçamento entre linhas e sentido de execução.
+- [x] Regenerar a rota quando os parâmetros customizáveis forem alterados e o plano for reaplicado.
+- [x] Garantir que a rota exportada usa os mesmos parâmetros customizados.
+- [x] Informar a quantidade de waypoints na revisão e no feedback de aplicação.
+- [x] Testar TypeScript, build e revisão visual.
+- [ ] Validar a missão em DJI Fly real antes de voo.
