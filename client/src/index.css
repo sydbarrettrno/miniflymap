@@ -45,3 +45,23 @@ button:active { transform:scale(.97); }
 @media (max-width:1100px) { .sidebar { width:216px; padding-left:16px; padding-right:16px; }.workspace { padding:24px; }.content-grid { grid-template-columns:minmax(0,1fr) 310px; }.map-surface { height:470px; }.metrics { grid-template-columns:repeat(3,1fr); }.metric:nth-child(4),.metric:nth-child(5) { border-top:1px solid #E1E6E1; }.metric:nth-child(4) { border-left:0; padding-left:0; } }
 @media (max-width:820px) { .app-shell { display:block; }.sidebar { width:100%; min-height:auto; padding:15px 18px; }.sidebar-rule,.mission-id,.step-nav,.sidebar-bottom { display:none; }.brand-name { font-size:20px; }.workspace { padding:18px 14px 26px; }.topbar { align-items:flex-start; flex-direction:column; margin-bottom:18px; }.top-actions { width:100%; }.top-actions .primary-button { margin-left:auto; }.content-grid { display:flex; flex-direction:column; }.review-panel { width:100%; }.map-surface { height:390px; }.map-footer { gap:9px; flex-wrap:wrap; padding:8px 12px; }.map-coords { margin-left:0; }.metrics { grid-template-columns:repeat(2,1fr); }.metric:nth-child(3) { border-left:0; padding-left:0; }.metric:nth-child(5) { grid-column:span 2; }.review-note { align-items:flex-start; flex-wrap:wrap; }.review-note button { margin-left:24px; } }
 @media (prefers-reduced-motion:reduce) { *,*:before,*:after { scroll-behavior:auto!important; transition-duration:.01ms!important; animation-duration:.01ms!important; } }
+
+/* Mapa real: tiles cartográficos, geometria da missão e estados de operação. */
+.real-map-surface { height:525px; background:#dfe8e1; position:relative; overflow:hidden; }
+.real-map-surface.satellite { background:#263c43; }
+.tile-map { position:absolute; inset:0; overflow:hidden; cursor:crosshair; background:#dfe8e1; }
+.tile-grid { position:absolute; width:1280px; height:1280px; transform:translate(-256px,-256px); }
+.map-tile { position:absolute; width:256px; height:256px; object-fit:cover; user-select:none; pointer-events:none; }
+.map-geo-overlay { position:absolute; inset:0; pointer-events:none; z-index:1; }
+.map-geo-overlay svg { width:100%; height:100%; overflow:visible; }
+.map-geo-overlay .boundary-fill { fill:rgba(13,124,102,.18); stroke:none; }
+.map-geo-overlay .boundary-line { fill:none; stroke:#0D7C66; stroke-width:2.3; stroke-dasharray:7 5; }
+.map-geo-overlay .route-line { fill:none; stroke:#13283F; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+.map-geo-overlay .waypoint { fill:#fff; stroke:#13283F; stroke-width:2; }
+.map-geo-overlay .start-point { fill:#0D7C66; stroke:#fff; stroke-width:2.5; }
+.map-map-overlay { position:absolute; inset:0; pointer-events:none; z-index:2; }
+.map-credit { position:absolute; left:12px; bottom:11px; color:#425B62; font:500 9px 'DM Sans',sans-serif; background:rgba(255,255,255,.75); padding:3px 5px; }
+.map-map-overlay .map-compass { top:17px; right:18px; }
+.map-map-overlay .map-mode { right:18px; bottom:15px; }
+.layers-popover { pointer-events:auto; }
+@media (max-width:820px) { .real-map-surface { height:390px; } }

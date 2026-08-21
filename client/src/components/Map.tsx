@@ -92,21 +92,25 @@ const FORGE_BASE_URL =
   "https://forge.butterfly-effect.dev";
 const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
 
+let mapScriptPromise: Promise<void> | null = null;
+
 function loadMapScript() {
-  return new Promise(resolve => {
+  if (window.google?.maps) return Promise.resolve();
+  if (mapScriptPromise) return mapScriptPromise;
+  mapScriptPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
+    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry&loading=async`;
     script.async = true;
     script.crossOrigin = "anonymous";
-    script.onload = () => {
-      resolve(null);
-      script.remove(); // Clean up immediately
-    };
+    script.onload = () => { resolve(); script.remove(); };
     script.onerror = () => {
-      console.error("Failed to load Google Maps script");
+      mapScriptPromise = null;
+      reject(new Error("Não foi possível carregar o mapa real"));
+      script.remove();
     };
     document.head.appendChild(script);
   });
+  return mapScriptPromise;
 }
 
 interface MapViewProps {
@@ -126,27 +130,33 @@ export function MapView({
   const map = useRef<google.maps.Map | null>(null);
 
   const init = usePersistFn(async () => {
-    await loadMapScript();
-    if (!mapContainer.current) {
-      console.error("Map container not found");
-      return;
-    }
-    map.current = new window.google.maps.Map(mapContainer.current, {
-      zoom: initialZoom,
-      center: initialCenter,
-      mapTypeControl: true,
-      fullscreenControl: true,
-      zoomControl: true,
-      streetViewControl: true,
-      mapId: "DEMO_MAP_ID",
-    });
-    if (onMapReady) {
-      onMapReady(map.current);
+    if (map.current || !mapContainer.current) return;
+    try {
+      await loadMapScript();
+      if (!mapContainer.current || !window.google?.maps) return;
+      map.current = new window.google.maps.Map(mapContainer.current, {
+        zoom: initialZoom,
+        center: initialCenter,
+        mapTypeControl: true,
+        fullscreenControl: true,
+        zoomControl: true,
+        streetViewControl: true,
+        mapId: "DEMO_MAP_ID",
+      });
+      onMapReady?.(map.current);
+    } catch (error) {
+      console.error(error);
+      if (mapContainer.current) {
+        mapContainer.current.innerHTML = "<div style='height:100%;display:grid;place-items:center;padding:24px;text-align:center;font:600 13px DM Sans,sans-serif;color:#13283F;background:#E8EDE7'>Mapa real indisponível nesta sessão. Verifique a conexão e recarregue a página.</div>";
+      }
     }
   });
 
   useEffect(() => {
     init();
+    return () => {
+      map.current = null;
+    };
   }, [init]);
 
   return (
