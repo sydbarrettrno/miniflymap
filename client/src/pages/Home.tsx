@@ -1,30 +1,532 @@
-/* Design: Cartografia de campo — Google Maps real como base, geolocalização automática e desenho protegido para o plano. */
-import { useEffect, useMemo, useState } from "react";
-import { MapContainer, TileLayer, Polygon, Polyline, CircleMarker, useMap, useMapEvents } from "react-leaflet";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { MapContainer, Marker, Polygon, Polyline, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp, Compass, Download, FolderOpen, LocateFixed, MapPinned, Navigation, PencilRuler, RotateCcw, Satellite, Save, Settings2, ShieldCheck, Trash2 } from "lucide-react";
-import { toast } from "sonner";
 import JSZip from "jszip";
-type Point = { lat: number; lng: number };
-const NS = "http://www.uav.com/wpmz/1.0.2";
-const xmlEscape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&apos;");
-const num = (value: number) => value.toFixed(1);
-function distanceM(a: Point, b: Point) { const r = 6371000; const p1 = a.lat * Math.PI / 180; const p2 = b.lat * Math.PI / 180; const dp = (b.lat - a.lat) * Math.PI / 180; const dl = (b.lng - a.lng) * Math.PI / 180; const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2; return 2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)); }
-function generateRoute(boundary: Point[], altitude: number, front: number, side: number, angleDeg = 0, spacingOverride = 0, reverseOrder = false) { const center = boundary.reduce((sum, point) => ({ lat: sum.lat + point.lat / boundary.length, lng: sum.lng + point.lng / boundary.length }), { lat: 0, lng: 0 }); const cosLat = Math.cos(center.lat * Math.PI / 180); const toLocal = (point: Point) => { const x = (point.lng - center.lng) * 111320 * cosLat; const y = (point.lat - center.lat) * 111320; const angle = angleDeg * Math.PI / 180; return { x: x * Math.cos(angle) + y * Math.sin(angle), y: -x * Math.sin(angle) + y * Math.cos(angle) }; }; const fromLocal = (point: { x: number; y: number }) => { const angle = angleDeg * Math.PI / 180; const x = point.x * Math.cos(angle) - point.y * Math.sin(angle); const y = point.x * Math.sin(angle) + point.y * Math.cos(angle); return { lat: center.lat + y / 111320, lng: center.lng + x / (111320 * cosLat) }; }; const polygon = boundary.map(toLocal); const ys = polygon.map((point) => point.y); const minY = Math.min(...ys); const maxY = Math.max(...ys); const diagonalTan = Math.tan(84 * Math.PI / 360); const footprintWidthM = 2 * altitude * diagonalTan * .8; const footprintHeightM = 2 * altitude * diagonalTan * .6; const lineSpacingM = Math.max(1, spacingOverride > 0 ? spacingOverride : footprintWidthM * (1 - side / 100)); const photoSpacingM = Math.max(1, footprintHeightM * (1 - front / 100)); const route: Point[] = []; let reverse = reverseOrder; const lineCount = Math.max(1, Math.ceil((maxY - minY) / lineSpacingM)); for (let i = 0; i < lineCount; i += 1) { const y = minY + (maxY - minY) * ((i + .5) / lineCount); const intersections: number[] = []; polygon.forEach((a, edgeIndex) => { const b = polygon[(edgeIndex + 1) % polygon.length]; const crosses = (a.y <= y && b.y > y) || (b.y <= y && a.y > y); if (crosses) intersections.push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x)); }); intersections.sort((a, b) => a - b); for (let j = 0; j + 1 < intersections.length; j += 2) { const left = intersections[j]; const right = intersections[j + 1]; const startX = reverse ? right : left; const endX = reverse ? left : right; const start = fromLocal({ x: startX, y }); const end = fromLocal({ x: endX, y }); const steps = Math.max(2, Math.ceil(distanceM(start, end) / photoSpacingM)); for (let k = 0; k < steps; k += 1) route.push(fromLocal({ x: startX + (endX - startX) * (k / (steps - 1)), y })); reverse = !reverse; } } return route; }
-function actionGroup(id: number, index: number, body: string) { return `      <wpml:actionGroup><wpml:actionGroupId>${id}</wpml:actionGroupId><wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex><wpml:actionGroupEndIndex>${index}</wpml:actionGroupEndIndex><wpml:actionGroupMode>parallel</wpml:actionGroupMode><wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger><wpml:action><wpml:actionId>${id}</wpml:actionId>${body}</wpml:action></wpml:actionGroup>\n`; }
-function buildKmz(boundary: Point[], route: Point[], altitude: number, speed: number, gimbal: number, droneEnum = 68) { const ts = Date.now(); const config = `  <wpml:missionConfig><wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode><wpml:finishAction>goHome</wpml:finishAction><wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost><wpml:executeRCLostAction>goBack</wpml:executeRCLostAction><wpml:globalTransitionalSpeed>${num(Math.min(speed, 5))}</wpml:globalTransitionalSpeed><wpml:droneInfo><wpml:droneEnumValue>${droneEnum}</wpml:droneEnumValue><wpml:droneSubEnumValue>0</wpml:droneSubEnumValue></wpml:droneInfo></wpml:missionConfig>`; const template = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${NS}"><Document><wpml:author>NV Mapping</wpml:author><wpml:createTime>${ts}</wpml:createTime><wpml:updateTime>${ts}</wpml:updateTime>${config}<Folder><wpml:templateType>waypoint</wpml:templateType><wpml:templateId>0</wpml:templateId><wpml:waylineCoordinateSysParam><wpml:coordinateMode>WGS84</wpml:coordinateMode><wpml:heightMode>relativeToStartPoint</wpml:heightMode><wpml:positioningType>GPS</wpml:positioningType></wpml:waylineCoordinateSysParam><wpml:autoFlightSpeed>${num(speed)}</wpml:autoFlightSpeed><wpml:globalHeight>${num(altitude)}</wpml:globalHeight><wpml:caliFlightEnable>0</wpml:caliFlightEnable><wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode></Folder><Placemark><name>Área desenhada</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${[...boundary, boundary[0]].map((p) => `${p.lng.toFixed(8)},${p.lat.toFixed(8)},0`).join(" ")}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>`; const placemarks = route.map((p, index) => { const photo = actionGroup(index + 1, index, `<wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc><wpml:actionActuatorFuncParam><wpml:payloadPositionIndex>0</wpml:payloadPositionIndex></wpml:actionActuatorFuncParam>`); const gimbalAction = index === 0 ? actionGroup(route.length + 1, index, `<wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc><wpml:actionActuatorFuncParam><wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase><wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode><wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable><wpml:gimbalPitchRotateAngle>${num(gimbal)}</wpml:gimbalPitchRotateAngle><wpml:payloadPositionIndex>0</wpml:payloadPositionIndex></wpml:actionActuatorFuncParam>`) : ""; return `<Placemark><Point><coordinates>${p.lng.toFixed(8)},${p.lat.toFixed(8)},${num(altitude)}</coordinates></Point><wpml:index>${index}</wpml:index><wpml:executeHeight>${num(altitude)}</wpml:executeHeight><wpml:waypointSpeed>${num(speed)}</wpml:waypointSpeed><wpml:waypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode><wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle><wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint><wpml:waypointHeadingAngleEnable>0</wpml:waypointHeadingAngleEnable><wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode><wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex></wpml:waypointHeadingParam><wpml:waypointTurnParam><wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode><wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist></wpml:waypointTurnParam><wpml:useStraightLine>1</wpml:useStraightLine>${gimbalAction}${photo}<wpml:waypointGimbalHeadingParam><wpml:waypointGimbalPitchAngle>${num(gimbal)}</wpml:waypointGimbalPitchAngle><wpml:waypointGimbalYawAngle>0</wpml:waypointGimbalYawAngle></wpml:waypointGimbalHeadingParam></Placemark>`; }).join("\n"); const waylines = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${NS}"><Document>${config}<Folder><wpml:templateId>0</wpml:templateId><wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode><wpml:waylineId>0</wpml:waylineId><wpml:distance>0</wpml:distance><wpml:duration>0</wpml:duration><wpml:autoFlightSpeed>${num(speed)}</wpml:autoFlightSpeed>${placemarks}</Folder></Document></kml>`; return { template, waylines }; }
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Crosshair,
+  Download,
+  FileDown,
+  FileUp,
+  FolderOpen,
+  HelpCircle,
+  Layers3,
+  LocateFixed,
+  MapPinned,
+  Navigation,
+  Redo2,
+  Satellite,
+  Save,
+  Trash2,
+  Undo2,
+} from "lucide-react";
+import { toast } from "sonner";
+import { polygonAreaM2, normalizeBearing180 } from "../domain/geoMath";
+import { orientTowardStart, planMission, reverseMission } from "../domain/gridPlanner";
+import {
+  CAMERA_MINI_5_PRO,
+  DEFAULT_SETTINGS,
+  type GeoPoint,
+  type MissionPlan,
+  type MissionSettings,
+  type SavedProject,
+} from "../domain/models";
+import { buildKmzFiles, buildPreviewKml, validateWpmlFiles } from "../dji/kmzExporter";
+import {
+  dxfPolylineToLatLng,
+  importBoundaryFile,
+  readDxfPolylines,
+  type DxfCrs,
+  type DxfPolyline,
+} from "../io/importers";
+import { deleteProject, loadProjects, saveProject } from "../storage/projectStore";
 
-const DEFAULT_CENTER = { lat: -23.5505, lng: -46.6333 };
-function MapRecenter({ center }: { center: Point }) { const map = useMap(); useEffect(() => { map.setView([center.lat, center.lng]); }, [center, map]); return null; }
-function MapClickCapture({ drawing, onMapClick }: { drawing: boolean; onMapClick: (point: Point) => void }) { useMapEvents({ click: (event) => { if (drawing) onMapClick({ lat: event.latlng.lat, lng: event.latlng.lng }); } }); return null; }
-function LeafletMap({ center, points, route, drawing, satellite, onMapClick }: { center: Point; points: Point[]; route: Point[]; drawing: boolean; satellite: boolean; onMapClick: (point: Point) => void }) { return <div className="leaflet-map"><MapContainer center={[center.lat, center.lng]} zoom={16} zoomControl={true} scrollWheelZoom={true} className={drawing ? "drawing-cursor" : ""}><TileLayer attribution={satellite ? "Tiles © Esri" : "© OpenStreetMap contributors"} url={satellite ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"} /><MapRecenter center={center} /><MapClickCapture drawing={drawing} onMapClick={onMapClick} />{points.length >= 3 && <Polygon positions={points.map((p) => [p.lat, p.lng] as [number, number])} pathOptions={{ color: "#0D7C66", fillColor: "#0D7C66", fillOpacity: .16, weight: 2, dashArray: "6 5" }} />}{route.length > 1 && <Polyline positions={route.map((p) => [p.lat, p.lng] as [number, number])} pathOptions={{ color: "#13283F", weight: 3 }} />}{points.map((point, index) => <CircleMarker key={`${point.lat}-${point.lng}-${index}`} center={[point.lat, point.lng]} radius={index === 0 ? 7 : 5} pathOptions={{ color: "#fff", weight: 2, fillColor: index === 0 ? "#0D7C66" : "#13283F", fillOpacity: 1 }} />)}</MapContainer><div className="leaflet-map-badge"><span className={`mode-dot ${drawing ? "active" : ""}`} /> MAPA INTERATIVO {drawing ? "· DESENHO ATIVO" : ""}</div></div>; }
-function Field({ label, value, suffix, onChange }: { label: string; value: string; suffix?: string; onChange: (value: string) => void }) { return <label className="field"><span>{label}</span><div className="field-input"><input value={value} onChange={(event) => onChange(event.target.value)} inputMode="decimal" />{suffix && <small>{suffix}</small>}</div></label>; }
-function StatusPill({ children, tone = "green" }: { children: React.ReactNode; tone?: "green" | "amber" | "navy" }) { return <span className={`status-pill ${tone}`}><span className="status-dot" />{children}</span>; }
+const DEFAULT_CENTER: GeoPoint = { lat: -26.116, lng: -48.616 };
+const vertexIcon = L.divIcon({ className: "nv-vertex-icon", html: '<span></span>', iconSize: [18, 18], iconAnchor: [9, 9] });
+const startIcon = L.divIcon({ className: "nv-start-icon", html: '<span>S</span>', iconSize: [28, 28], iconAnchor: [14, 14] });
+const routeStartIcon = L.divIcon({ className: "nv-route-start", html: '<span>1</span>', iconSize: [26, 26], iconAnchor: [13, 13] });
+const routeEndIcon = L.divIcon({ className: "nv-route-end", html: '<span>F</span>', iconSize: [26, 26], iconAnchor: [13, 13] });
+
+type DrawMode = "idle" | "draw" | "start";
+
+type PendingDxf = {
+  polylines: DxfPolyline[];
+  fileName: string;
+} | null;
+
+function MapClickController({ mode, onPoint }: { mode: DrawMode; onPoint: (point: GeoPoint) => void }) {
+  useMapEvents({
+    click(event) {
+      if (mode !== "idle") onPoint({ lat: event.latlng.lat, lng: event.latlng.lng });
+    },
+  });
+  return null;
+}
+
+function MapFit({ points, request }: { points: GeoPoint[]; request: number }) {
+  const map = useMap();
+  useEffect(() => {
+    if (request <= 0 || points.length === 0) return;
+    if (points.length === 1) {
+      map.setView([points[0].lat, points[0].lng], 18);
+      return;
+    }
+    map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])), { padding: [32, 32] });
+  }, [map, points, request]);
+  return null;
+}
+
+function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className={`modal-card ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
+        <header><h2>{title}</h2><button className="icon-btn" onClick={onClose} aria-label="Fechar">×</button></header>
+        <div className="modal-body">{children}</div>
+      </section>
+    </div>
+  );
+}
+
+function NumberField({ label, value, unit, min, max, step = 1, disabled, onChange }: {
+  label: string;
+  value: number;
+  unit?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <div><input type="number" value={value} min={min} max={max} step={step} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} />{unit && <small>{unit}</small>}</div>
+    </label>
+  );
+}
+
 export default function Home() {
-  const [center, setCenter] = useState<Point>(DEFAULT_CENTER); const [drawing, setDrawing] = useState(false); const [points, setPoints] = useState<Point[]>([]); const [routeReady, setRouteReady] = useState(false); const [satellite, setSatellite] = useState(false); const [locationState, setLocationState] = useState<"idle" | "loading" | "ready" | "error">("idle"); const [altitude, setAltitude] = useState("60"); const [speed, setSpeed] = useState("5"); const [frontOverlap, setFrontOverlap] = useState("80"); const [sideOverlap, setSideOverlap] = useState("70"); const [routeAngle, setRouteAngle] = useState("0"); const [lineSpacing, setLineSpacing] = useState("auto"); const [reverseRoute, setReverseRoute] = useState("false"); const photoCount = useMemo(() => Math.max(0, Math.round(Number(altitude || 60) * .98)), [altitude]); const estimatedMinutes = useMemo(() => Math.max(1, Math.round(photoCount * 1.5 / 60 + 4)), [photoCount]); const generatedRoute = useMemo(() => routeReady && points.length >= 3 ? generateRoute(points, Number(altitude), Number(frontOverlap), Number(sideOverlap), Number(routeAngle) || 0, lineSpacing === "auto" ? 0 : Number(lineSpacing), reverseRoute === "true") : [], [routeReady, points, altitude, frontOverlap, sideOverlap, routeAngle, lineSpacing, reverseRoute]);
-  const requestLocation = () => { if (!navigator.geolocation) { setLocationState("error"); toast.error("Este navegador não oferece geolocalização"); return; } setLocationState("loading"); navigator.geolocation.getCurrentPosition(({ coords }) => { setCenter({ lat: coords.latitude, lng: coords.longitude }); setLocationState("ready"); toast.success("Google Maps centralizado na sua localização"); }, () => { setLocationState("error"); toast.error("Localização negada. Permita o acesso no navegador."); }, { enableHighAccuracy: true, timeout: 10000 }); };
-  useEffect(() => { const timer = window.setTimeout(requestLocation, 600); return () => window.clearTimeout(timer); }, []);
-  const addPoint = (point: Point) => { if (!drawing) { toast("Ative Desenhar área para editar o quadro"); return; } setPoints((current) => [...current, point]); setRouteReady(false); };
-  const toggleDrawing = () => { setDrawing((value) => !value); toast(drawing ? "Modo desenho encerrado" : "Modo desenho ativo: clique no mapa para adicionar vértices"); }; const clearArea = () => { setPoints([]); setRouteReady(false); toast("Área limpa"); };   const generateMission = () => { if (points.length < 3) { toast.error("Desenhe pelo menos 3 vértices no mapa"); return; } const route = generateRoute(points, Number(altitude), Number(frontOverlap), Number(sideOverlap), Number(routeAngle) || 0, lineSpacing === "auto" ? 0 : Number(lineSpacing), reverseRoute === "true"); if (route.length < 2) { toast.error("Não foi possível gerar uma rota nesta área"); return; } setRouteReady(true); toast.success(`Plano gerado com ${route.length} waypoints. Revise antes de exportar.`); };   const exportMission = async () => { if (!routeReady || points.length < 3) { toast.error("Desenhe a área e aplique o plano antes de exportar"); return; } const altitudeValue = Number(altitude); const speedValue = Number(speed); const route = generateRoute(points, altitudeValue, Number(frontOverlap), Number(sideOverlap), Number(routeAngle) || 0, lineSpacing === "auto" ? 0 : Number(lineSpacing), reverseRoute === "true"); if (route.length < 2) { toast.error("Não foi possível gerar waypoints para esta área"); return; } const { template, waylines } = buildKmz(points, route, altitudeValue, speedValue, -90); const coordinateCount = (waylines.match(/<Point><coordinates>/g) || []).length; if (!template.includes("<coordinates>") || coordinateCount !== route.length) { toast.error(`Exportação bloqueada: ${coordinateCount} de ${route.length} coordenadas encontradas`); return; } const coordinatesCsv = ["index,latitude,longitude,altitude_m", ...route.map((point, index) => `${index},${point.lat.toFixed(8)},${point.lng.toFixed(8)},${altitudeValue.toFixed(1)}`)].join("\n"); const zip = new JSZip(); zip.file("wpmz/template.kml", template); zip.file("wpmz/waylines.wpml", waylines); zip.file("wpmz/coordinates.csv", coordinatesCsv); const blob = await zip.generateAsync({ type: "blob", mimeType: "application/vnd.google-earth.kmz" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "NV_Mapping_missao.kmz"; anchor.click(); URL.revokeObjectURL(url); toast.success(`KMZ real gerado com ${route.length} waypoints`); };
-  return <main className="app-shell"><aside className="sidebar"><div className="brand-block"><div className="brand-mark"><img src="/manus-storage/nvdrone-mark_ba7627ba.png" alt="" /></div><div><div className="eyebrow">NV / OPERATIONS</div><div className="brand-name">NV MAPPING</div><div className="brand-subtitle">Drone Mapping</div></div></div><div className="sidebar-rule" /><div className="mission-id"><span>MISSÃO ATUAL</span><strong>Levantamento · 01</strong><StatusPill tone={routeReady ? "green" : "amber"}>{routeReady ? "Rota pronta" : "Em revisão"}</StatusPill></div><nav className="step-nav" aria-label="Etapas do planejamento"><div className="nav-step active"><span className="step-index">01</span><div><b>Área</b><small>{points.length >= 3 ? `${points.length} vértices` : "Defina no mapa"}</small></div><Check size={15} /></div><div className="nav-step active"><span className="step-index">02</span><div><b>Parâmetros</b><small>Mini 5 Pro · {altitude} m</small></div><Check size={15} /></div><div className={`nav-step ${routeReady ? "active" : "current"}`}><span className="step-index">03</span><div><b>Revisão</b><small>{routeReady ? "Rota pronta" : "Plano pendente"}</small></div>{routeReady ? <Check size={15} /> : null}</div><div className="nav-step"><span className="step-index">04</span><div><b>Exportação</b><small>KMZ para DJI Fly</small></div></div></nav><div className="sidebar-bottom"><button className="side-link"><FolderOpen size={17} /> Projetos salvos</button><button className="side-link"><CircleHelp size={17} /> Guia de operação</button><div className="device-card"><div className="device-icon"><Satellite size={18} /></div><div><span>DISPOSITIVO</span><strong>DJI Mini 5 Pro</strong><small>Perfil consumer · WPML</small></div></div></div></aside><section className="workspace"><header className="topbar"><div><div className="breadcrumb">PROJETOS / NV MAPPING / <span>LEVANTAMENTO 01</span></div><h1>Planejamento de voo</h1></div><div className="top-actions"><button className="icon-button" onClick={() => { setPoints((current) => current.slice(0, -1)); setRouteReady(false); }} title="Desfazer último vértice"><RotateCcw size={17} /></button><button className="secondary-button" onClick={() => { localStorage.setItem("nv-mapping-plan", JSON.stringify({ center, points, altitude, speed, frontOverlap, sideOverlap, routeAngle, lineSpacing, reverseRoute })); toast.success("Plano salvo neste navegador"); }}><Save size={16} /> Salvar</button><button className="primary-button" onClick={exportMission}><Download size={16} /> Exportar KMZ</button></div></header><div className="content-grid"><section className="map-column"><div className="map-toolbar"><div className="tool-group"><button className={`tool-button ${drawing ? "selected" : ""}`} onClick={toggleDrawing}><PencilRuler size={16} /> {drawing ? "Parar desenho" : "Desenhar área"}</button><button className="tool-button" onClick={clearArea}><Trash2 size={16} /> Limpar</button></div><div className="tool-group"><button className="icon-button" onClick={requestLocation} title="Minha localização"><LocateFixed size={16} /></button><button className="icon-button" onClick={() => setSatellite((value) => !value)} title="Satélite"><Satellite size={16} /></button></div></div><div className={`map-card real-map-card ${satellite ? "satellite" : ""}`}><div className="map-surface real-map-surface"><LeafletMap center={center} points={points} route={generatedRoute} drawing={drawing} satellite={satellite} onMapClick={addPoint} /></div><div className="map-footer"><span><MapPinned size={15} /> {points.length} vértices no quadro</span><span><Navigation size={15} /> {routeReady ? "Rota calculada" : "Aguardando plano"}</span><span className="map-coords">{locationState === "ready" ? "Localização encontrada" : `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`}</span></div></div><div className="map-tip"><div className="tip-icon"><PencilRuler size={16} /></div><div><strong>{drawing ? "Modo desenho ativo" : "Área de voo"}</strong><span>{drawing ? "Clique no mapa para adicionar vértices." : "Ative Desenhar área para editar o quadro. O mapa fica protegido fora desse modo."}</span></div><button onClick={toggleDrawing}>{drawing ? "Encerrar" : "Ativar"}</button></div></section><aside className="review-panel"><div className="panel-heading"><div><div className="eyebrow">CONFIGURAÇÃO</div><h2>Parâmetros da missão</h2></div><button className="icon-button ghost"><Settings2 size={17} /></button></div><div className="device-selector"><div className="device-icon dark"><Satellite size={16} /></div><div><span>PERFIL DO DRONE</span><strong>DJI Mini 5 Pro</strong></div><ChevronDown size={16} /></div><div className="section-label">VOO E COBERTURA <span>Obrigatório</span></div><div className="field-grid"><Field label="Altura" value={altitude} suffix="m" onChange={setAltitude} /><Field label="Velocidade" value={speed} suffix="m/s" onChange={setSpeed} /><Field label="Sobreposição frontal" value={frontOverlap} suffix="%" onChange={setFrontOverlap} /><Field label="Sobreposição lateral" value={sideOverlap} suffix="%" onChange={setSideOverlap} /></div><div className="route-customizer"><div className="customizer-heading"><span>ROTA CUSTOMIZÁVEL</span><small>Aplicado ao gerar o plano</small></div><div className="field-grid"><Field label="Orientação" value={routeAngle} suffix="°" onChange={setRouteAngle} /><Field label="Espaçamento" value={lineSpacing} suffix={lineSpacing === "auto" ? "auto" : "m"} onChange={setLineSpacing} /></div><label className="select-field"><span>Sentido de execução</span><select value={reverseRoute} onChange={(event) => setReverseRoute(event.target.value)}><option value="false">Esquerda → direita</option><option value="true">Direita → esquerda</option></select></label></div><div className="implemented-fields-note"><Check size={15} /> Os parâmetros acima são aplicados diretamente na geração da rota e do KMZ.</div><button className="generate-button" onClick={generateMission}><Navigation size={17} /> Aplicar plano</button><div className={`validation-card ${routeReady ? "ready" : "warning"}`}>{routeReady ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}<div><strong>{routeReady ? "Plano pronto para revisão" : "Desenhe e aplique o plano"}</strong><span>{routeReady ? `${generatedRoute.length} waypoints calculados dentro da área.` : "Defina uma área com pelo menos 3 vértices."}</span></div></div></aside></div><section className="bottom-review"><div className="review-title"><div><div className="eyebrow">FOLHA DE CONFIRMAÇÃO · 04</div><h2>Revisão antes da exportação</h2></div><StatusPill tone={routeReady ? "green" : "amber"}>{routeReady ? "Tudo conferido" : "Revisão necessária"}</StatusPill></div><div className="metrics"><div className="metric"><span>Área coberta</span><strong>— <small>m²</small></strong><em>Calculada no mapa real</em></div><div className="metric"><span>GSD estimado</span><strong>1,8 <small>cm/px</small></strong><em>Baseado em {altitude} m</em></div><div className="metric"><span>Fotos previstas</span><strong>{photoCount} <small>pontos</small></strong><em>Captura automática</em></div><div className="metric"><span>Tempo estimado</span><strong>{estimatedMinutes} <small>min</small></strong><em>Sem deslocamento</em></div><div className="metric alert-metric"><span>Retorno e perda de sinal</span><strong><Check size={16} /> RTH · continuar</strong><em>Confira no DJI Fly</em></div></div><div className="review-note"><AlertTriangle size={15} /><span>CHECK OPERACIONAL · O arquivo gerado é uma orientação de missão. Revise altura relativa, sentido, RTH e ações de câmera no DJI Fly antes de autorizar a decolagem.</span><button onClick={() => toast("Guia: revise o KMZ no DJI Fly antes de voar.")}>Ler guia DJI <ArrowUp size={14} /></button></div></section></section></main>;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [center, setCenter] = useState(DEFAULT_CENTER);
+  const [boundary, setBoundary] = useState<GeoPoint[]>([]);
+  const [referenceBoundary, setReferenceBoundary] = useState<GeoPoint[]>([]);
+  const [preferredStart, setPreferredStart] = useState<GeoPoint | null>(null);
+  const [plan, setPlan] = useState<MissionPlan | null>(null);
+  const [settings, setSettings] = useState<MissionSettings>({ ...DEFAULT_SETTINGS });
+  const [mode, setMode] = useState<DrawMode>("idle");
+  const [satellite, setSatellite] = useState(true);
+  const [showReference, setShowReference] = useState(true);
+  const [showBoundary, setShowBoundary] = useState(true);
+  const [showRoute, setShowRoute] = useState(true);
+  const [fitRequest, setFitRequest] = useState(0);
+  const [fitPoints, setFitPoints] = useState<GeoPoint[]>([]);
+  const [projects, setProjects] = useState<SavedProject[]>(() => loadProjects());
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [dxfOpen, setDxfOpen] = useState(false);
+  const [pendingDxf, setPendingDxf] = useState<PendingDxf>(null);
+  const [dxfCrs, setDxfCrs] = useState<DxfCrs>("SIRGAS_2000_UTM_22S");
+  const areaM2 = useMemo(() => polygonAreaM2(boundary), [boundary]);
+
+  const invalidatePlan = () => setPlan(null);
+
+  const updateSettings = <K extends keyof MissionSettings>(key: K, value: MissionSettings[K]) => {
+    setSettings((current) => ({ ...current, [key]: value }));
+    invalidatePlan();
+  };
+
+  const fitTo = (points: GeoPoint[]) => {
+    if (points.length === 0) return;
+    setFitPoints(points.map((p) => ({ ...p })));
+    setFitRequest((value) => value + 1);
+  };
+
+  const requestLocation = () => {
+    if (!navigator.geolocation) {
+      toast.error("Este navegador não oferece geolocalização.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const point = { lat: coords.latitude, lng: coords.longitude };
+        setCenter(point);
+        fitTo([point]);
+        toast.success("Mapa centralizado na sua localização.");
+      },
+      () => toast.error("Não foi possível obter sua localização. Verifique a permissão do navegador."),
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(requestLocation, 500);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const handleMapPoint = (point: GeoPoint) => {
+    if (mode === "start") {
+      setPreferredStart(point);
+      setMode("idle");
+      if (plan) {
+        try {
+          setPlan(orientTowardStart(planMission(boundary, settings), point));
+        } catch (error) {
+          toast.error(messageOf(error));
+        }
+      }
+      toast.success("Ponto inicial preferido definido.");
+      return;
+    }
+    if (mode === "draw") {
+      setBoundary((current) => [...current, point]);
+      invalidatePlan();
+    }
+  };
+
+  const moveVertex = (index: number, point: GeoPoint) => {
+    setBoundary((current) => current.map((item, itemIndex) => itemIndex === index ? point : item));
+    invalidatePlan();
+  };
+
+  const generate = (overrideSettings = settings) => {
+    try {
+      const generated = orientTowardStart(planMission(boundary, overrideSettings, CAMERA_MINI_5_PRO), preferredStart);
+      setPlan(generated);
+      setMode("idle");
+      toast.success(`Plano gerado: ${generated.stats.photoCount} waypoints em ${generated.parts.length} parte(s).`);
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
+  const rotate = (delta: number) => {
+    if (boundary.length < 3) {
+      toast.error("Desenhe o quadro de voo antes de rotacionar as linhas.");
+      return;
+    }
+    const currentBearing = plan?.stats.effectiveBearingDeg ?? settings.bearingDeg;
+    const nextSettings = { ...settings, autoBearing: false, bearingDeg: normalizeBearing180(currentBearing + delta) };
+    setSettings(nextSettings);
+    generate(nextSettings);
+  };
+
+  const invert = () => {
+    if (!plan) return toast.error("Gere o plano antes de inverter a missão.");
+    setPlan(reverseMission(plan));
+    toast.success("Sentido da missão invertido.");
+  };
+
+  const preset2d = () => {
+    setSettings({ ...settings, altitudeM: 60, speedMs: 5, frontOverlapPct: 80, sideOverlapPct: 70, gimbalPitchDeg: -90, autoBearing: true, crossHatch: false });
+    invalidatePlan();
+    toast.success("Preset 2D AUTO aplicado.");
+  };
+
+  const presetCross = () => {
+    setSettings({ ...settings, altitudeM: 60, speedMs: 4, frontOverlapPct: 80, sideOverlapPct: 75, gimbalPitchDeg: -90, autoBearing: true, crossHatch: true });
+    invalidatePlan();
+    toast.success("Preset CRUZADO AUTO aplicado.");
+  };
+
+  const clearBoundary = () => {
+    if (boundary.length > 0 && !window.confirm("Limpar o quadro de voo e o plano atual?")) return;
+    setBoundary([]);
+    setPreferredStart(null);
+    setPlan(null);
+    setMode("idle");
+  };
+
+  const useReferenceAsBoundary = () => {
+    if (referenceBoundary.length < 3) return toast.error("Importe primeiro uma referência válida.");
+    setBoundary(referenceBoundary.map((p) => ({ ...p })));
+    setPlan(null);
+    fitTo(referenceBoundary);
+    toast.success("Referência copiada para o quadro de voo. Revise os vértices antes de gerar a missão.");
+  };
+
+  const onImportFile = async (file: File) => {
+    try {
+      if (file.name.toLocaleLowerCase().endsWith(".dxf")) {
+        const polylines = readDxfPolylines(await file.text());
+        if (polylines.length === 0) throw new Error("DXF sem polilinha utilizável.");
+        setPendingDxf({ polylines, fileName: file.name });
+        setDxfOpen(true);
+        return;
+      }
+      const points = await importBoundaryFile(file, dxfCrs);
+      setReferenceBoundary(points);
+      setShowReference(true);
+      fitTo(points);
+      toast.success(`Referência importada: ${points.length} vértices.`);
+    } catch (error) {
+      toast.error(`Falha ao importar: ${messageOf(error)}`);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const chooseDxfPolyline = (polyline: DxfPolyline) => {
+    try {
+      const points = dxfPolylineToLatLng(polyline, dxfCrs);
+      setReferenceBoundary(points);
+      setShowReference(true);
+      setDxfOpen(false);
+      setPendingDxf(null);
+      fitTo(points);
+      toast.success(`DXF importado: camada ${polyline.layer}, ${points.length} vértices.`);
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
+  const openSave = () => {
+    if (boundary.length < 3) return toast.error("Desenhe o quadro de voo antes de salvar.");
+    const date = new Date();
+    setSaveName(`Mapeamento ${date.toLocaleDateString("pt-BR")} ${date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`);
+    setSaveOpen(true);
+  };
+
+  const confirmSave = () => {
+    const name = saveName.trim();
+    if (!name) return toast.error("Informe o nome do projeto.");
+    const saved: SavedProject = {
+      name,
+      boundary: boundary.map((p) => ({ ...p })),
+      settings: { ...settings },
+      savedAtMs: Date.now(),
+      referenceBoundary: referenceBoundary.map((p) => ({ ...p })),
+      preferredStart: preferredStart ? { ...preferredStart } : null,
+      plan: plan ? structuredClone(plan) : null,
+    };
+    const next = saveProject(saved);
+    setProjects(next);
+    setSaveOpen(false);
+    toast.success("Projeto salvo neste dispositivo.");
+  };
+
+  const loadProject = (project: SavedProject) => {
+    setBoundary(project.boundary.map((p) => ({ ...p })));
+    setReferenceBoundary(project.referenceBoundary.map((p) => ({ ...p })));
+    setPreferredStart(project.preferredStart ? { ...project.preferredStart } : null);
+    setSettings({ ...project.settings });
+    setPlan(project.plan ? structuredClone(project.plan) : null);
+    setProjectsOpen(false);
+    fitTo(project.boundary.length ? project.boundary : project.referenceBoundary);
+    toast.success("Projeto carregado.");
+  };
+
+  const removeProject = (project: SavedProject) => {
+    if (!window.confirm(`Excluir o projeto “${project.name}”?`)) return;
+    setProjects(deleteProject(project.name));
+  };
+
+  const downloadPart = async (partIndex: number) => {
+    if (!plan) return;
+    try {
+      const files = buildKmzFiles(plan, partIndex, "NV_Mapping");
+      const errors = validateWpmlFiles(files, plan.parts[partIndex].length);
+      if (errors.length) throw new Error(errors.join(" "));
+      const zip = new JSZip();
+      zip.file("wpmz/template.kml", files.templateKml);
+      zip.file("wpmz/waylines.wpml", files.waylinesWpml);
+      const blob = await zip.generateAsync({ type: "blob", mimeType: "application/vnd.google-earth.kmz", compression: "DEFLATE" });
+      downloadBlob(blob, files.fileName);
+      toast.success(`KMZ ${partIndex + 1}/${plan.parts.length} validado e gerado.`);
+    } catch (error) {
+      toast.error(`Exportação bloqueada: ${messageOf(error)}`);
+    }
+  };
+
+  const downloadAllParts = async () => {
+    if (!plan) return;
+    try {
+      const packageZip = new JSZip();
+      for (let index = 0; index < plan.parts.length; index += 1) {
+        const files = buildKmzFiles(plan, index, "NV_Mapping");
+        const errors = validateWpmlFiles(files, plan.parts[index].length);
+        if (errors.length) throw new Error(`Parte ${index + 1}: ${errors.join(" ")}`);
+        const kmz = new JSZip();
+        kmz.file("wpmz/template.kml", files.templateKml);
+        kmz.file("wpmz/waylines.wpml", files.waylinesWpml);
+        const kmzBytes = await kmz.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+        packageZip.file(files.fileName, kmzBytes);
+      }
+      packageZip.file("LEIA-ME.txt", "Extraia este ZIP. Cada arquivo .kmz é uma parte independente da missão e deve ser usado individualmente no DJI Fly. Revise rota, altura, RTH, gimbal e ações de foto antes do voo.");
+      downloadBlob(await packageZip.generateAsync({ type: "blob", compression: "DEFLATE" }), "NV_Mapping_todas_as_partes.zip");
+      toast.success("Pacote com todas as partes gerado.");
+    } catch (error) {
+      toast.error(`Exportação bloqueada: ${messageOf(error)}`);
+    }
+  };
+
+  const downloadPreview = () => {
+    if (!plan) return toast.error("Gere o plano antes de exportar a prévia.");
+    downloadBlob(new Blob([buildPreviewKml(plan)], { type: "application/vnd.google-earth.kml+xml" }), "NV_Mapping_preview.kml");
+  };
+
+  const route = plan?.waypoints ?? [];
+  const mapFocus = boundary.length ? boundary : referenceBoundary.length ? referenceBoundary : [center];
+
+  return (
+    <main className="nv-app">
+      <header className="topbar">
+        <div className="brand"><span className="brand-mark">NV</span><div><strong>NV DRONE MAPPING</strong><small>Planejamento fotogramétrico · DJI Mini 5 Pro</small></div></div>
+        <div className="top-actions">
+          <button className="btn secondary" onClick={() => setProjectsOpen(true)}><FolderOpen size={16} /> Projetos</button>
+          <button className="btn secondary" onClick={openSave}><Save size={16} /> Salvar</button>
+          <button className="btn primary" disabled={!plan} onClick={() => setExportOpen(true)}><Download size={16} /> Exportar DJI</button>
+        </div>
+      </header>
+
+      <section className="workspace">
+        <div className="map-pane">
+          <div className="map-toolbar">
+            <div className="toolbar-group">
+              <button className={`btn ${mode === "draw" ? "active" : "secondary"}`} onClick={() => setMode(mode === "draw" ? "idle" : "draw")}><MapPinned size={16} /> {mode === "draw" ? "Encerrar desenho" : "Desenhar quadro"}</button>
+              <button className="icon-btn" title="Desfazer último vértice" onClick={() => { setBoundary((current) => current.slice(0, -1)); invalidatePlan(); }}><Undo2 size={17} /></button>
+              <button className="icon-btn danger" title="Limpar quadro" onClick={clearBoundary}><Trash2 size={17} /></button>
+            </div>
+            <div className="toolbar-group">
+              <input ref={fileInputRef} className="hidden-file" type="file" accept=".kml,.kmz,.dxf" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onImportFile(file); }} />
+              <button className="btn secondary" onClick={() => fileInputRef.current?.click()}><FileUp size={16} /> Importar</button>
+              <button className="icon-btn" title="Minha localização" onClick={requestLocation}><LocateFixed size={17} /></button>
+              <button className="icon-btn" title="Mapa/Satélite" onClick={() => setSatellite((value) => !value)}><Satellite size={17} /></button>
+              <button className="icon-btn" title="Camadas" onClick={() => setLayersOpen(true)}><Layers3 size={17} /></button>
+              <button className="icon-btn" title="Ajustar mapa" onClick={() => fitTo(mapFocus)}><Crosshair size={17} /></button>
+            </div>
+          </div>
+
+          <div className="map-card">
+            <MapContainer center={[center.lat, center.lng]} zoom={17} scrollWheelZoom className={`leaflet-map ${mode !== "idle" ? "capture-mode" : ""}`}>
+              <TileLayer
+                attribution={satellite ? "Tiles © Esri" : "© OpenStreetMap contributors"}
+                url={satellite ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}
+              />
+              <MapClickController mode={mode} onPoint={handleMapPoint} />
+              <MapFit points={fitPoints} request={fitRequest} />
+              {showReference && referenceBoundary.length >= 3 && <Polygon positions={referenceBoundary.map(toTuple)} pathOptions={{ color: "#1976d2", fillOpacity: 0.04, weight: 3 }} />}
+              {showBoundary && boundary.length >= 3 && <Polygon positions={boundary.map(toTuple)} pathOptions={{ color: "#f57c00", fillColor: "#ff9800", fillOpacity: 0.08, weight: 3 }} />}
+              {showBoundary && boundary.map((point, index) => (
+                <Marker key={`vertex-${index}`} position={toTuple(point)} draggable icon={vertexIcon} eventHandlers={{ dragend: (event) => { const ll = (event.target as L.Marker).getLatLng(); moveVertex(index, { lat: ll.lat, lng: ll.lng }); } }} />
+              ))}
+              {showRoute && route.length > 1 && <Polyline positions={route.map(toTuple)} pathOptions={{ color: "#0d7c66", weight: 3 }} />}
+              {showRoute && route.length > 0 && <Marker position={toTuple(route[0])} icon={routeStartIcon} />}
+              {showRoute && route.length > 1 && <Marker position={toTuple(route[route.length - 1])} icon={routeEndIcon} />}
+              {preferredStart && <Marker position={toTuple(preferredStart)} icon={startIcon} />}
+            </MapContainer>
+            <div className="map-status"><span>{mode === "draw" ? "DESENHO ATIVO · clique para adicionar vértices" : mode === "start" ? "DEFINA O INÍCIO · clique no mapa" : "MAPA OPERACIONAL"}</span><span>{boundary.length} vértices · {formatArea(areaM2)}</span></div>
+          </div>
+
+          {referenceBoundary.length >= 3 && (
+            <div className="reference-banner"><div><strong>Referência importada</strong><span>{referenceBoundary.length} vértices · azul no mapa</span></div><button className="btn secondary" onClick={useReferenceAsBoundary}>Usar como quadro</button></div>
+          )}
+
+          <div className="mission-controls">
+            <button className="btn secondary" onClick={() => { if (boundary.length < 3) return toast.error("Desenhe o quadro primeiro."); setMode("start"); }}><Navigation size={16} /> Definir início</button>
+            <button className="btn secondary" onClick={() => rotate(-15)}><ChevronLeft size={16} /> −15°</button>
+            <button className="btn secondary" onClick={() => rotate(15)}>+15° <ChevronRight size={16} /></button>
+            <button className="btn secondary" disabled={!plan} onClick={invert}><Redo2 size={16} /> Inverter rota</button>
+            <button className="btn secondary" disabled={!plan} onClick={downloadPreview}><FileDown size={16} /> Prévia KML</button>
+            <button className="btn secondary" onClick={() => setGuideOpen(true)}><HelpCircle size={16} /> Guia DJI</button>
+          </div>
+        </div>
+
+        <aside className="config-pane">
+          <section className="panel">
+            <div className="panel-title"><div><small>PERFIL</small><h2>DJI Mini 5 Pro</h2></div><span className={`status ${plan ? "ready" : "draft"}`}>{plan ? "Plano aplicado" : "Não aplicado"}</span></div>
+            <div className="preset-row"><button className="btn preset" onClick={preset2d}>2D AUTO</button><button className="btn preset" onClick={presetCross}>CRUZADO AUTO</button></div>
+            <div className="field-grid">
+              <NumberField label="Altura" value={settings.altitudeM} unit="m" min={10} max={500} step={1} onChange={(value) => updateSettings("altitudeM", value)} />
+              <NumberField label="Velocidade" value={settings.speedMs} unit="m/s" min={0.5} max={15} step={0.5} onChange={(value) => updateSettings("speedMs", value)} />
+              <NumberField label="Overlap frontal" value={settings.frontOverlapPct} unit="%" min={10} max={95} onChange={(value) => updateSettings("frontOverlapPct", value)} />
+              <NumberField label="Overlap lateral" value={settings.sideOverlapPct} unit="%" min={10} max={95} onChange={(value) => updateSettings("sideOverlapPct", value)} />
+            </div>
+            <div className="switch-row"><label><input type="checkbox" checked={settings.autoBearing} onChange={(event) => updateSettings("autoBearing", event.target.checked)} /> Direção automática otimizada</label><label><input type="checkbox" checked={settings.crossHatch} onChange={(event) => updateSettings("crossHatch", event.target.checked)} /> Varredura cruzada +90°</label></div>
+            <div className="field-grid advanced-grid">
+              <NumberField label="Direção" value={settings.bearingDeg} unit="°" min={0} max={179.9} step={5} disabled={settings.autoBearing} onChange={(value) => updateSettings("bearingDeg", value)} />
+              <NumberField label="Gimbal" value={settings.gimbalPitchDeg} unit="°" min={-135} max={80} step={1} onChange={(value) => updateSettings("gimbalPitchDeg", value)} />
+              <NumberField label="Máx. waypoints" value={settings.maxWaypointsPerMission} min={20} max={200} step={1} onChange={(value) => updateSettings("maxWaypointsPerMission", Math.round(value))} />
+              <NumberField label="DJI drone enum" value={settings.droneEnumValue} min={1} step={1} onChange={(value) => updateSettings("droneEnumValue", Math.round(value))} />
+            </div>
+            <div className="select-grid">
+              <label><span>Fim da missão</span><select value={settings.finishAction} onChange={(event) => updateSettings("finishAction", event.target.value as MissionSettings["finishAction"])}><option value="goHome">Retornar para casa (RTH)</option><option value="noAction">Sem ação</option><option value="autoLand">Pousar</option><option value="gotoFirstWaypoint">Voltar ao primeiro waypoint</option></select></label>
+              <label><span>Perda de sinal</span><select value={settings.rcLostAction} onChange={(event) => updateSettings("rcLostAction", event.target.value as MissionSettings["rcLostAction"])}><option value="goBack">Retornar (RTH)</option><option value="landing">Pousar</option><option value="hover">Pairar</option><option value="goContinue">Continuar missão</option></select></label>
+            </div>
+            <div className="compat-note"><AlertTriangle size={16} /><span>Perfil Mini 5 Pro usa <b>droneEnumValue 68</b>, herdado do APK e editável. O DJI Fly deve ser a validação final antes do voo.</span></div>
+            <button className="btn primary generate" onClick={() => generate()}><Navigation size={17} /> APLICAR PLANO</button>
+          </section>
+
+          <section className="panel stats-panel">
+            <div className="panel-title"><div><small>REVISÃO</small><h2>Estatísticas calculadas</h2></div>{plan ? <CheckCircle2 className="ok-icon" size={20} /> : <AlertTriangle className="warn-icon" size={20} />}</div>
+            <div className="stats-grid">
+              <Stat label="Área" value={plan ? formatArea(plan.stats.areaM2) : formatArea(areaM2)} />
+              <Stat label="GSD" value={plan ? `${plan.stats.gsdCmPx.toFixed(2)} cm/px` : "—"} />
+              <Stat label="Fotos/waypoints" value={plan ? String(plan.stats.photoCount) : "—"} />
+              <Stat label="Linhas de voo" value={plan ? String(plan.stats.flightLineCount) : "—"} />
+              <Stat label="Espaço linhas" value={plan ? `${plan.stats.lineSpacingM.toFixed(1)} m` : "—"} />
+              <Stat label="Espaço fotos" value={plan ? `${plan.stats.photoSpacingM.toFixed(1)} m` : "—"} />
+              <Stat label="Rota" value={plan ? formatDistance(plan.stats.routeDistanceM) : "—"} />
+              <Stat label="Tempo estimado" value={plan ? `~${Math.ceil(plan.stats.estimatedFlightSeconds / 60)} min` : "—"} />
+              <Stat label="Bearing efetivo" value={plan ? `${plan.stats.effectiveBearingDeg.toFixed(0)}°` : "—"} />
+              <Stat label="Partes DJI" value={plan ? String(plan.parts.length) : "—"} />
+            </div>
+            {plan && plan.parts.length > 1 && <div className="split-warning"><AlertTriangle size={16} /> Missão dividida automaticamente para respeitar o limite de {settings.maxWaypointsPerMission} waypoints por arquivo.</div>}
+          </section>
+        </aside>
+      </section>
+
+      {saveOpen && <Modal title="Salvar projeto" onClose={() => setSaveOpen(false)}><label className="modal-field"><span>Nome</span><input autoFocus value={saveName} onChange={(event) => setSaveName(event.target.value)} /></label><div className="modal-actions"><button className="btn secondary" onClick={() => setSaveOpen(false)}>Cancelar</button><button className="btn primary" onClick={confirmSave}>Salvar</button></div></Modal>}
+
+      {projectsOpen && <Modal title="Projetos salvos" onClose={() => setProjectsOpen(false)} wide><div className="project-list">{projects.length === 0 ? <p className="empty">Nenhum projeto salvo neste navegador.</p> : projects.map((project) => <article key={`${project.name}-${project.savedAtMs}`}><div><strong>{project.name}</strong><span>{new Date(project.savedAtMs).toLocaleString("pt-BR")}</span><small>{project.boundary.length} vértices · {project.plan ? `${project.plan.stats.photoCount} waypoints` : "sem plano aplicado"}</small></div><div><button className="btn secondary" onClick={() => loadProject(project)}>Abrir</button><button className="icon-btn danger" onClick={() => removeProject(project)}><Trash2 size={16} /></button></div></article>)}</div></Modal>}
+
+      {guideOpen && <Modal title="Levar a missão ao DJI Fly" onClose={() => setGuideOpen(false)} wide><ol className="guide"><li>Desenhe ou importe uma referência e defina o quadro real de voo.</li><li>Gere o plano e confira no mapa a direção, início/fim, altura e cobertura.</li><li>Exporte a prévia KML e, se desejar, faça uma conferência adicional no Google Earth.</li><li>Exporte o KMZ DJI. Se houver mais de 190 waypoints, use cada parte separadamente.</li><li>No DJI Fly, crie e salve uma missão Waypoint temporária.</li><li>No armazenamento do celular/controle, localize o KMZ dessa missão e substitua-o pelo KMZ correspondente gerado pelo NV Drone Mapping. A pasta varia conforme Android, controle e versão do DJI Fly.</li><li>Reabra a missão no DJI Fly e confira visualmente todos os waypoints, altura relativa, RTH, perda de sinal, gimbal e ações de foto.</li><li>O primeiro voo deve ser em área aberta e pequena. A posição de decolagem deve ter cota semelhante à usada no planejamento porque a altura da missão é relativa ao ponto inicial.</li></ol><div className="guide-warning"><AlertTriangle size={18} /><span>O DJI Fly não oferece uma função oficial genérica de “Importar KMZ”. Este fluxo utiliza o arquivo de missão salvo pelo próprio DJI Fly e deve ser validado no aplicativo antes da decolagem.</span></div></Modal>}
+
+      {layersOpen && <Modal title="Camadas do mapa" onClose={() => setLayersOpen(false)}><div className="layer-options"><label><input type="checkbox" checked={showReference} onChange={(e) => setShowReference(e.target.checked)} /> Referência importada</label><label><input type="checkbox" checked={showBoundary} onChange={(e) => setShowBoundary(e.target.checked)} /> Quadro de voo e vértices</label><label><input type="checkbox" checked={showRoute} onChange={(e) => setShowRoute(e.target.checked)} /> Rota e início/fim</label></div></Modal>}
+
+      {exportOpen && plan && <Modal title="Exportar missão DJI" onClose={() => setExportOpen(false)} wide><div className="export-summary"><Stat label="Altura" value={`${plan.settings.altitudeM} m`} /><Stat label="Velocidade" value={`${plan.settings.speedMs} m/s`} /><Stat label="Overlap" value={`${plan.settings.frontOverlapPct}/${plan.settings.sideOverlapPct}%`} /><Stat label="Fotos" value={String(plan.stats.photoCount)} /><Stat label="Rota" value={formatDistance(plan.stats.routeDistanceM)} /><Stat label="Partes" value={String(plan.parts.length)} /></div><div className="export-list">{plan.parts.map((part, index) => <article key={index}><div><strong>Parte {index + 1}/{plan.parts.length}</strong><span>{part.length} waypoints</span></div><button className="btn primary" onClick={() => void downloadPart(index)}><Download size={15} /> Baixar KMZ</button></article>)}</div>{plan.parts.length > 1 && <button className="btn secondary full" onClick={() => void downloadAllParts()}><FileDown size={16} /> Baixar todas as partes em ZIP</button>}<div className="guide-warning"><AlertTriangle size={17} /><span>Antes de voar: abra a missão no DJI Fly e confira rota, altura relativa, RTH, perda de sinal, gimbal e ação de foto em todos os waypoints.</span></div></Modal>}
+
+      {dxfOpen && pendingDxf && <Modal title={`Importar DXF · ${pendingDxf.fileName}`} onClose={() => { setDxfOpen(false); setPendingDxf(null); }} wide><label className="modal-field"><span>Sistema de coordenadas</span><select value={dxfCrs} onChange={(event) => setDxfCrs(event.target.value as DxfCrs)}><option value="SIRGAS_2000_UTM_22S">SIRGAS 2000 / UTM 22S</option><option value="SIRGAS_2000_UTM_23S">SIRGAS 2000 / UTM 23S</option><option value="LAT_LON">Latitude / Longitude</option></select></label><div className="project-list dxf-list">{pendingDxf.polylines.map((polyline, index) => <article key={`${polyline.name}-${index}`}><div><strong>{polyline.name}</strong><span>Layer: {polyline.layer}</span><small>{polyline.points.length} vértices · {polyline.closed ? "fechada" : "aberta"}</small></div><button className="btn primary" onClick={() => chooseDxfPolyline(polyline)}>Usar</button></article>)}</div></Modal>}
+    </main>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return <div className="stat"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function toTuple(point: GeoPoint): [number, number] {
+  return [point.lat, point.lng];
+}
+
+function formatArea(areaM2: number): string {
+  if (!Number.isFinite(areaM2) || areaM2 <= 0) return "0 m²";
+  return areaM2 >= 10000 ? `${(areaM2 / 10000).toFixed(2)} ha` : `${areaM2.toFixed(0)} m²`;
+}
+
+function formatDistance(distanceM: number): string {
+  return distanceM >= 1000 ? `${(distanceM / 1000).toFixed(2)} km` : `${distanceM.toFixed(0)} m`;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
