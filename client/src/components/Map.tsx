@@ -99,7 +99,7 @@ function loadMapScript() {
   if (mapScriptPromise) return mapScriptPromise;
   mapScriptPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry&loading=async`;
+    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=maps,marker,places,geocoding,geometry`;
     script.async = true;
     script.crossOrigin = "anonymous";
     script.onload = () => { resolve(); script.remove(); };
@@ -134,7 +134,9 @@ export function MapView({
     try {
       await loadMapScript();
       if (!mapContainer.current || !window.google?.maps) return;
-      map.current = new window.google.maps.Map(mapContainer.current, {
+      const mapsLibrary = typeof window.google.maps.importLibrary === "function" ? await window.google.maps.importLibrary("maps") as google.maps.MapsLibrary : null;
+      const MapConstructor = mapsLibrary?.Map ?? window.google.maps.Map;
+      map.current = new MapConstructor(mapContainer.current, {
         zoom: initialZoom,
         center: initialCenter,
         mapTypeControl: true,

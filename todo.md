@@ -1,9 +1,10 @@
 # Correção do mapa real
 
-- [ ] Auditar a API e as props do componente de mapa fornecido pelo template.
-- [ ] Substituir o SVG ilustrativo por mapa real com centro, zoom e marcador do operador.
-- [ ] Implementar solicitação de geolocalização do navegador com estados de carregamento, sucesso e erro.
-- [ ] Conectar modo DESENHAR ao clique no mapa real e renderizar o polígono da área.
-- [ ] Enquadrar automaticamente a localização e a área desenhada.
-- [ ] Manter controles de satélite, camadas e revisão funcionando.
-- [ ] Executar TypeScript, build e screenshot final.
+- [x] Auditar a API e as props do componente de mapa fornecido pelo template.
+- [x] Usar Google Maps como base cartográfica principal.
+- [x] Inicializar geolocalização automaticamente ao abrir a página.
+- [x] Exibir a posição padrão e atualizar o centro quando a localização for autorizada.
+- [x] Manter botão manual de localização com mensagens de permissão e erro.
+- [x] Conectar modo DESENHAR ao clique no Google Maps e renderizar a geometria da área.
+- [x] Manter camadas e revisão funcionando; satélite fica acessível no próprio Google Maps Embed.
+- [x] Executar TypeScript, build e screenshot final.
