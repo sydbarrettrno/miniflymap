@@ -75,8 +75,8 @@ export function validateSettings(settings: MissionSettings): void {
   if (!Number.isFinite(settings.altitudeM) || settings.altitudeM < 10 || settings.altitudeM > 500) {
     throw new Error("Altura fora do intervalo aceito (10 a 500 m).");
   }
-  if (!Number.isFinite(settings.speedMs) || settings.speedMs < 0.5 || settings.speedMs > 15) {
-    throw new Error("Velocidade fora do intervalo aceito (0,5 a 15 m/s).");
+  if (!Number.isFinite(settings.speedMs) || settings.speedMs < 1 || settings.speedMs > 15) {
+    throw new Error("Velocidade fora do perfil aceito do Mini 5 Pro (1 a 15 m/s).");
   }
   if (!Number.isFinite(settings.frontOverlapPct) || settings.frontOverlapPct < 10 || settings.frontOverlapPct > 95) {
     throw new Error("Sobreposição frontal inválida (10% a 95%).");
