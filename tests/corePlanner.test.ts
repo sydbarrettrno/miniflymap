@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildKmzFiles, validateWpmlFiles } from "../client/src/dji/kmzExporter";
+import {
+  DJI_FLY_CONSUMER_WPML_NAMESPACE,
+  DJI_STANDARD_WPML_NAMESPACE,
+  buildKmzFiles,
+  validateWpmlFiles,
+} from "../client/src/dji/kmzExporter";
 import { orientTowardStart, planMission, reverseMission } from "../client/src/domain/gridPlanner";
 import { DEFAULT_SETTINGS, type GeoPoint } from "../client/src/domain/models";
 
@@ -72,15 +77,32 @@ describe("GridPlanner parity", () => {
   });
 });
 
-describe("DJI WPML exporter", () => {
-  it("gera template.kml e waylines.wpml compatíveis com o formato do APK", () => {
+describe("DJI WPML exporter independente", () => {
+  it("gera perfil DJI Fly consumer por padrão", () => {
     const plan = planMission(rect(-26.1, -48.62, 120, 80), { ...DEFAULT_SETTINGS });
-    const files = buildKmzFiles(plan, 0, "Unit_Test");
+    const files = buildKmzFiles(plan, 0, "Unit_Test", { createdAtMs: 1_700_000_000_000 });
+
+    expect(files.profile).toBe("dji-fly-consumer");
+    expect(files.namespace).toBe(DJI_FLY_CONSUMER_WPML_NAMESPACE);
     expect(validateWpmlFiles(files, plan.parts[0].length)).toEqual([]);
     expect(files.templateKml).toContain("<wpml:templateType>waypoint</wpml:templateType>");
     expect(files.waylinesWpml).toContain("<wpml:droneEnumValue>68</wpml:droneEnumValue>");
     expect(files.waylinesWpml).toContain("<wpml:finishAction>goHome</wpml:finishAction>");
     expect(files.waylinesWpml).toContain("<wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>");
+    expect(files.waylinesWpml).toContain("<wpml:actionGroupMode>sequence</wpml:actionGroupMode>");
+    expect(files.waylinesWpml).not.toContain("<wpml:actionGroupMode>parallel</wpml:actionGroupMode>");
+  });
+
+  it("também gera o namespace oficial DJI WPML", () => {
+    const plan = planMission(rect(-26.1, -48.62, 120, 80), { ...DEFAULT_SETTINGS });
+    const files = buildKmzFiles(plan, 0, "Official_Test", {
+      profile: "dji-standard",
+      createdAtMs: 1_700_000_000_000,
+    });
+
+    expect(files.namespace).toBe(DJI_STANDARD_WPML_NAMESPACE);
+    expect(validateWpmlFiles(files, plan.parts[0].length)).toEqual([]);
+    expect(files.templateKml).toContain(`xmlns:wpml="${DJI_STANDARD_WPML_NAMESPACE}"`);
   });
 
   it("cria exatamente uma ação takePhoto por waypoint", () => {
@@ -96,5 +118,18 @@ describe("DJI WPML exporter", () => {
       cursor = next + token.length;
     }
     expect(count).toBe(plan.parts[0].length);
+  });
+
+  it("usa IDs de ação locais por grupo e gimbal antes da primeira foto", () => {
+    const plan = planMission(rect(-26.1, -48.62, 120, 80), { ...DEFAULT_SETTINGS });
+    const files = buildKmzFiles(plan, 0, "Unit_Test");
+    const firstGroupStart = files.waylinesWpml.indexOf("<wpml:actionGroupId>0</wpml:actionGroupId>");
+    const firstGroupEnd = files.waylinesWpml.indexOf("</wpml:actionGroup>", firstGroupStart);
+    const firstGroup = files.waylinesWpml.slice(firstGroupStart, firstGroupEnd);
+
+    expect(firstGroup).toContain("<wpml:actionId>0</wpml:actionId>");
+    expect(firstGroup).toContain("<wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>");
+    expect(firstGroup).toContain("<wpml:actionId>1</wpml:actionId>");
+    expect(firstGroup).toContain("<wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>");
   });
 });

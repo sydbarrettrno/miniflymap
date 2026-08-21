@@ -1,88 +1,345 @@
 import type { GeoPoint, MissionPlan, MissionSettings } from "../domain/models";
 
-export const WPML_NAMESPACE = "http://www.uav.com/wpmz/1.0.2";
+/**
+ * Independent WPML writer.
+ *
+ * This module is intentionally implemented from DJI's published WPML field
+ * definitions plus independently observed DJI Fly mission metadata. It does
+ * not depend on, import, or reproduce third-party WPML writer source code.
+ * See docs/WPML_PROVENANCE.md.
+ */
+
+export const DJI_STANDARD_WPML_NAMESPACE = "http://www.dji.com/wpmz/1.0.2";
+export const DJI_FLY_CONSUMER_WPML_NAMESPACE = "http://www.uav.com/wpmz/1.0.2";
+
+export type WpmlProfile = "dji-fly-consumer" | "dji-standard";
 
 export type KmzFiles = {
   templateKml: string;
   waylinesWpml: string;
   fileName: string;
+  profile: WpmlProfile;
+  namespace: string;
 };
 
-export function buildKmzFiles(plan: MissionPlan, partIndex: number, missionName = "NV_Mapping"): KmzFiles {
-  if (partIndex < 0 || partIndex >= plan.parts.length) throw new Error("Parte de missão inválida.");
+export type BuildKmzOptions = {
+  profile?: WpmlProfile;
+  createdAtMs?: number;
+};
+
+type XmlNode = {
+  tag: string;
+  value?: string | number;
+  children?: XmlNode[];
+};
+
+const TURN_MODE = "toPointAndStopWithDiscontinuityCurvature";
+
+export function buildKmzFiles(
+  plan: MissionPlan,
+  partIndex: number,
+  missionName = "NV_Mapping",
+  options: BuildKmzOptions = {},
+): KmzFiles {
+  if (!Number.isInteger(partIndex) || partIndex < 0 || partIndex >= plan.parts.length) {
+    throw new Error("Parte de missão inválida.");
+  }
+
   const points = plan.parts[partIndex];
   if (points.length < 2) throw new Error("A parte selecionada possui menos de dois waypoints.");
-  const name = plan.parts.length > 1
-    ? `${missionName}_part_${partIndex + 1}_of_${plan.parts.length}`
-    : missionName;
-  const timestamp = Date.now();
+
+  const profile = options.profile ?? "dji-fly-consumer";
+  const namespace = namespaceFor(profile);
+  const timestamp = options.createdAtMs ?? Date.now();
+  const safeName = sanitizeMissionName(
+    plan.parts.length > 1
+      ? `${missionName}_part_${partIndex + 1}_of_${plan.parts.length}`
+      : missionName,
+  );
+
   return {
-    templateKml: templateKml(plan, name, timestamp),
-    waylinesWpml: waylinesWpml(plan, points),
-    fileName: `${name}.kmz`,
+    templateKml: buildTemplateDocument(plan.settings, safeName, timestamp, namespace),
+    waylinesWpml: buildWaylinesDocument(plan.settings, points, safeName, namespace),
+    fileName: `${safeName}.kmz`,
+    profile,
+    namespace,
   };
 }
 
 export function buildPreviewKml(plan: MissionPlan): string {
   const boundary = [...plan.boundary, plan.boundary[0]]
-    .map((p) => `${fixed(p.lng, 8)},${fixed(p.lat, 8)},0`)
+    .map((p) => `${decimal(p.lng, 8)},${decimal(p.lat, 8)},0`)
     .join(" ");
   const route = plan.waypoints
-    .map((p) => `${fixed(p.lng, 8)},${fixed(p.lat, 8)},${n(plan.settings.altitudeM)}`)
+    .map((p) => `${decimal(p.lng, 8)},${decimal(p.lat, 8)},${decimal(plan.settings.altitudeM, 1)}`)
     .join(" ");
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n  <name>NV Drone Mapping - Preview</name>\n  <Placemark><name>Área</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${boundary}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n  <Placemark><name>Rota</name><LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>${route}</coordinates></LineString></Placemark>\n</Document>\n</kml>\n`;
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+    "<Document>",
+    "  <name>NV Drone Mapping - Preview</name>",
+    `  <Placemark><name>Área</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${boundary}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`,
+    `  <Placemark><name>Rota</name><LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>${route}</coordinates></LineString></Placemark>`,
+    "</Document>",
+    "</kml>",
+    "",
+  ].join("\n");
 }
 
 export function validateWpmlFiles(files: KmzFiles, expectedWaypointCount: number): string[] {
   const errors: string[] = [];
-  if (!files.templateKml.includes(`xmlns:wpml="${WPML_NAMESPACE}"`)) errors.push("Namespace WPML ausente em template.kml.");
-  if (!files.waylinesWpml.includes(`xmlns:wpml="${WPML_NAMESPACE}"`)) errors.push("Namespace WPML ausente em waylines.wpml.");
-  if (!files.templateKml.includes("<wpml:templateType>waypoint</wpml:templateType>")) errors.push("template.kml sem templateType waypoint.");
+  const namespaceMarker = `xmlns:wpml="${files.namespace}"`;
+
+  if (!files.templateKml.includes(namespaceMarker)) errors.push("Namespace WPML ausente em template.kml.");
+  if (!files.waylinesWpml.includes(namespaceMarker)) errors.push("Namespace WPML ausente em waylines.wpml.");
+  if (!files.templateKml.includes("<wpml:templateType>waypoint</wpml:templateType>")) {
+    errors.push("template.kml sem templateType waypoint.");
+  }
+
   const waypointCount = countOccurrences(files.waylinesWpml, "<wpml:index>");
   const photoCount = countOccurrences(files.waylinesWpml, "<wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>");
-  if (waypointCount !== expectedWaypointCount) errors.push(`WPML contém ${waypointCount} waypoints; esperado ${expectedWaypointCount}.`);
-  if (photoCount !== expectedWaypointCount) errors.push(`WPML contém ${photoCount} ações de foto; esperado ${expectedWaypointCount}.`);
-  if (!files.waylinesWpml.includes("toPointAndStopWithDiscontinuityCurvature")) errors.push("Modo de curva esperado não encontrado.");
+
+  if (waypointCount !== expectedWaypointCount) {
+    errors.push(`WPML contém ${waypointCount} waypoints; esperado ${expectedWaypointCount}.`);
+  }
+  if (photoCount !== expectedWaypointCount) {
+    errors.push(`WPML contém ${photoCount} ações de foto; esperado ${expectedWaypointCount}.`);
+  }
+  if (!files.waylinesWpml.includes(`<wpml:waypointTurnMode>${TURN_MODE}</wpml:waypointTurnMode>`)) {
+    errors.push("Modo de curva esperado não encontrado.");
+  }
+  if (!files.waylinesWpml.includes("<wpml:actionGroupMode>sequence</wpml:actionGroupMode>")) {
+    errors.push("Grupos de ação não usam execução sequencial.");
+  }
+  if (files.waylinesWpml.includes("<wpml:actionGroupMode>parallel</wpml:actionGroupMode>")) {
+    errors.push("Modo de ação parallel não é emitido por este exportador.");
+  }
+  if (!files.waylinesWpml.includes("<wpml:useStraightLine>1</wpml:useStraightLine>")) {
+    errors.push("Configuração de segmento reto ausente.");
+  }
+
   return errors;
 }
 
-function templateKml(plan: MissionPlan, missionName: string, timestamp: number): string {
-  const s = plan.settings;
-  const config = missionConfig(s);
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">\n<Document>\n  <wpml:author>${escapeXml(missionName)}</wpml:author>\n  <wpml:createTime>${timestamp}</wpml:createTime>\n  <wpml:updateTime>${timestamp}</wpml:updateTime>\n${config}\n  <Folder>\n    <wpml:templateType>waypoint</wpml:templateType>\n    <wpml:templateId>0</wpml:templateId>\n    <wpml:waylineCoordinateSysParam>\n      <wpml:coordinateMode>WGS84</wpml:coordinateMode>\n      <wpml:heightMode>relativeToStartPoint</wpml:heightMode>\n      <wpml:positioningType>GPS</wpml:positioningType>\n    </wpml:waylineCoordinateSysParam>\n    <wpml:autoFlightSpeed>${n(s.speedMs)}</wpml:autoFlightSpeed>\n    <wpml:globalHeight>${n(s.altitudeM)}</wpml:globalHeight>\n    <wpml:caliFlightEnable>0</wpml:caliFlightEnable>\n    <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>\n  </Folder>\n</Document>\n</kml>\n`;
+function namespaceFor(profile: WpmlProfile): string {
+  return profile === "dji-standard" ? DJI_STANDARD_WPML_NAMESPACE : DJI_FLY_CONSUMER_WPML_NAMESPACE;
 }
 
-function waylinesWpml(plan: MissionPlan, points: GeoPoint[]): string {
-  const s = plan.settings;
-  const config = missionConfig(s);
-  let groupId = 1;
-  const placemarks = points.map((point, index) => {
-    let actions = "";
-    if (index === 0) actions += gimbalAction(groupId++, index, s.gimbalPitchDeg);
-    actions += takePhotoAction(groupId++, index);
-    return placemark(index, point, s.altitudeM, s.speedMs, s.gimbalPitchDeg, actions);
-  }).join("\n");
+function buildTemplateDocument(
+  settings: MissionSettings,
+  missionName: string,
+  timestamp: number,
+  namespace: string,
+): string {
+  const folder: XmlNode = {
+    tag: "Folder",
+    children: [
+      node("wpml:templateType", "waypoint"),
+      node("wpml:templateId", 0),
+      {
+        tag: "wpml:waylineCoordinateSysParam",
+        children: [
+          node("wpml:coordinateMode", "WGS84"),
+          node("wpml:heightMode", "relativeToStartPoint"),
+          node("wpml:positioningType", "GPS"),
+        ],
+      },
+      node("wpml:autoFlightSpeed", decimal(settings.speedMs, 1)),
+      node("wpml:globalHeight", decimal(settings.altitudeM, 1)),
+      {
+        tag: "wpml:globalWaypointHeadingParam",
+        children: [
+          node("wpml:waypointHeadingMode", "followWayline"),
+          node("wpml:waypointHeadingPathMode", "followBadArc"),
+        ],
+      },
+      node("wpml:globalWaypointTurnMode", TURN_MODE),
+      node("wpml:globalUseStraightLine", 1),
+    ],
+  };
 
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">\n<Document>\n${config}\n  <Folder>\n    <wpml:templateId>0</wpml:templateId>\n    <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>\n    <wpml:waylineId>0</wpml:waylineId>\n    <wpml:distance>0</wpml:distance>\n    <wpml:duration>0</wpml:duration>\n    <wpml:autoFlightSpeed>${n(s.speedMs)}</wpml:autoFlightSpeed>\n${placemarks}\n  </Folder>\n</Document>\n</kml>\n`;
+  return kmlDocument(namespace, [
+    node("name", missionName),
+    node("wpml:author", "NV Drone Mapping"),
+    node("wpml:createTime", timestamp),
+    node("wpml:updateTime", timestamp),
+    missionConfigNode(settings),
+    folder,
+  ]);
 }
 
-function missionConfig(settings: MissionSettings): string {
-  const exitOnLost = settings.rcLostAction === "goContinue" ? "goContinue" : "executeLostAction";
-  const executeLost = settings.rcLostAction === "goContinue" ? "goBack" : settings.rcLostAction;
-  const transitional = Math.min(settings.speedMs, 5);
-  return `  <wpml:missionConfig>\n    <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>\n    <wpml:finishAction>${settings.finishAction}</wpml:finishAction>\n    <wpml:exitOnRCLost>${exitOnLost}</wpml:exitOnRCLost>\n    <wpml:executeRCLostAction>${executeLost}</wpml:executeRCLostAction>\n    <wpml:globalTransitionalSpeed>${n(transitional)}</wpml:globalTransitionalSpeed>\n    <wpml:droneInfo>\n      <wpml:droneEnumValue>${settings.droneEnumValue}</wpml:droneEnumValue>\n      <wpml:droneSubEnumValue>0</wpml:droneSubEnumValue>\n    </wpml:droneInfo>\n  </wpml:missionConfig>`;
+function buildWaylinesDocument(
+  settings: MissionSettings,
+  points: GeoPoint[],
+  missionName: string,
+  namespace: string,
+): string {
+  const placemarks = points.map((point, index) => waypointNode(point, index, settings));
+
+  return kmlDocument(namespace, [
+    node("name", missionName),
+    missionConfigNode(settings),
+    {
+      tag: "Folder",
+      children: [
+        node("wpml:templateId", 0),
+        node("wpml:executeHeightMode", "relativeToStartPoint"),
+        node("wpml:waylineId", 0),
+        node("wpml:autoFlightSpeed", decimal(settings.speedMs, 1)),
+        ...placemarks,
+      ],
+    },
+  ]);
 }
 
-function placemark(index: number, point: GeoPoint, altitude: number, speed: number, pitch: number, actions: string): string {
-  return `    <Placemark>\n      <Point><coordinates>${fixed(point.lng, 8)},${fixed(point.lat, 8)}</coordinates></Point>\n      <wpml:index>${index}</wpml:index>\n      <wpml:executeHeight>${n(altitude)}</wpml:executeHeight>\n      <wpml:waypointSpeed>${n(speed)}</wpml:waypointSpeed>\n      <wpml:waypointHeadingParam>\n        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>\n        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>\n        <wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>\n        <wpml:waypointHeadingAngleEnable>0</wpml:waypointHeadingAngleEnable>\n        <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>\n        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>\n      </wpml:waypointHeadingParam>\n      <wpml:waypointTurnParam>\n        <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>\n        <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>\n      </wpml:waypointTurnParam>\n      <wpml:useStraightLine>1</wpml:useStraightLine>\n${actions}      <wpml:waypointGimbalHeadingParam>\n        <wpml:waypointGimbalPitchAngle>${n(pitch)}</wpml:waypointGimbalPitchAngle>\n        <wpml:waypointGimbalYawAngle>0</wpml:waypointGimbalYawAngle>\n      </wpml:waypointGimbalHeadingParam>\n    </Placemark>`;
+function missionConfigNode(settings: MissionSettings): XmlNode {
+  const continuing = settings.rcLostAction === "goContinue";
+  const exitOnLost = continuing ? "goContinue" : "executeLostAction";
+  const executeLost = continuing ? "goBack" : settings.rcLostAction;
+
+  return {
+    tag: "wpml:missionConfig",
+    children: [
+      node("wpml:flyToWaylineMode", "safely"),
+      node("wpml:finishAction", settings.finishAction),
+      node("wpml:exitOnRCLost", exitOnLost),
+      node("wpml:executeRCLostAction", executeLost),
+      node("wpml:globalTransitionalSpeed", decimal(settings.speedMs, 1)),
+      {
+        tag: "wpml:droneInfo",
+        children: [
+          node("wpml:droneEnumValue", settings.droneEnumValue),
+          node("wpml:droneSubEnumValue", 0),
+        ],
+      },
+    ],
+  };
 }
 
-function takePhotoAction(groupId: number, index: number): string {
-  return `      <wpml:actionGroup>\n        <wpml:actionGroupId>${groupId}</wpml:actionGroupId>\n        <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>\n        <wpml:actionGroupEndIndex>${index}</wpml:actionGroupEndIndex>\n        <wpml:actionGroupMode>parallel</wpml:actionGroupMode>\n        <wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>\n        <wpml:action>\n          <wpml:actionId>${groupId}</wpml:actionId>\n          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>\n          <wpml:actionActuatorFuncParam><wpml:payloadPositionIndex>0</wpml:payloadPositionIndex></wpml:actionActuatorFuncParam>\n        </wpml:action>\n      </wpml:actionGroup>\n`;
+function waypointNode(point: GeoPoint, index: number, settings: MissionSettings): XmlNode {
+  return {
+    tag: "Placemark",
+    children: [
+      {
+        tag: "Point",
+        children: [node("coordinates", `${decimal(point.lng, 8)},${decimal(point.lat, 8)}`)],
+      },
+      node("wpml:index", index),
+      node("wpml:executeHeight", decimal(settings.altitudeM, 1)),
+      node("wpml:waypointSpeed", decimal(settings.speedMs, 1)),
+      {
+        tag: "wpml:waypointHeadingParam",
+        children: [
+          node("wpml:waypointHeadingMode", "followWayline"),
+          node("wpml:waypointHeadingPathMode", "followBadArc"),
+        ],
+      },
+      {
+        tag: "wpml:waypointTurnParam",
+        children: [
+          node("wpml:waypointTurnMode", TURN_MODE),
+          node("wpml:waypointTurnDampingDist", 0),
+        ],
+      },
+      node("wpml:useStraightLine", 1),
+      actionGroupNode(index, settings.gimbalPitchDeg, index === 0),
+    ],
+  };
 }
 
-function gimbalAction(groupId: number, index: number, pitch: number): string {
-  return `      <wpml:actionGroup>\n        <wpml:actionGroupId>${groupId}</wpml:actionGroupId>\n        <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>\n        <wpml:actionGroupEndIndex>${index}</wpml:actionGroupEndIndex>\n        <wpml:actionGroupMode>parallel</wpml:actionGroupMode>\n        <wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>\n        <wpml:action>\n          <wpml:actionId>${groupId}</wpml:actionId>\n          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>\n          <wpml:actionActuatorFuncParam>\n            <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>\n            <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>\n            <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>\n            <wpml:gimbalPitchRotateAngle>${n(pitch)}</wpml:gimbalPitchRotateAngle>\n            <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>\n            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>\n            <wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>\n            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>\n            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>\n            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>\n            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>\n          </wpml:actionActuatorFuncParam>\n        </wpml:action>\n      </wpml:actionGroup>\n`;
+function actionGroupNode(index: number, pitchDeg: number, includeGimbal: boolean): XmlNode {
+  const actions: XmlNode[] = [];
+  let actionId = 0;
+
+  if (includeGimbal) {
+    actions.push(gimbalRotateAction(actionId++, pitchDeg));
+  }
+  actions.push(takePhotoAction(actionId));
+
+  return {
+    tag: "wpml:actionGroup",
+    children: [
+      node("wpml:actionGroupId", index),
+      node("wpml:actionGroupStartIndex", index),
+      node("wpml:actionGroupEndIndex", index),
+      node("wpml:actionGroupMode", "sequence"),
+      {
+        tag: "wpml:actionTrigger",
+        children: [node("wpml:actionTriggerType", "reachPoint")],
+      },
+      ...actions,
+    ],
+  };
+}
+
+function gimbalRotateAction(actionId: number, pitchDeg: number): XmlNode {
+  return {
+    tag: "wpml:action",
+    children: [
+      node("wpml:actionId", actionId),
+      node("wpml:actionActuatorFunc", "gimbalRotate"),
+      {
+        tag: "wpml:actionActuatorFuncParam",
+        children: [
+          node("wpml:payloadPositionIndex", 0),
+          node("wpml:gimbalHeadingYawBase", "north"),
+          node("wpml:gimbalRotateMode", "absoluteAngle"),
+          node("wpml:gimbalPitchRotateEnable", 1),
+          node("wpml:gimbalPitchRotateAngle", decimal(pitchDeg, 1)),
+          node("wpml:gimbalRollRotateEnable", 0),
+          node("wpml:gimbalRollRotateAngle", 0),
+          node("wpml:gimbalYawRotateEnable", 0),
+          node("wpml:gimbalYawRotateAngle", 0),
+          node("wpml:gimbalRotateTimeEnable", 0),
+          node("wpml:gimbalRotateTime", 0),
+        ],
+      },
+    ],
+  };
+}
+
+function takePhotoAction(actionId: number): XmlNode {
+  return {
+    tag: "wpml:action",
+    children: [
+      node("wpml:actionId", actionId),
+      node("wpml:actionActuatorFunc", "takePhoto"),
+      {
+        tag: "wpml:actionActuatorFuncParam",
+        children: [node("wpml:payloadPositionIndex", 0)],
+      },
+    ],
+  };
+}
+
+function kmlDocument(namespace: string, documentChildren: XmlNode[]): string {
+  const body = renderNode({ tag: "Document", children: documentChildren }, 1);
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${escapeXml(namespace)}">`,
+    body,
+    "</kml>",
+    "",
+  ].join("\n");
+}
+
+function node(tag: string, value: string | number): XmlNode {
+  return { tag, value };
+}
+
+function renderNode(xmlNode: XmlNode, depth: number): string {
+  const indent = "  ".repeat(depth);
+  if (xmlNode.children?.length) {
+    const children = xmlNode.children.map((child) => renderNode(child, depth + 1)).join("\n");
+    return `${indent}<${xmlNode.tag}>\n${children}\n${indent}</${xmlNode.tag}>`;
+  }
+  return `${indent}<${xmlNode.tag}>${escapeXml(String(xmlNode.value ?? ""))}</${xmlNode.tag}>`;
+}
+
+function sanitizeMissionName(value: string): string {
+  const trimmed = value.trim() || "NV_Mapping";
+  return trimmed.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 96);
 }
 
 function escapeXml(value: string): string {
@@ -94,21 +351,19 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
-function n(value: number): string {
-  return value.toFixed(1);
-}
-
-function fixed(value: number, digits: number): string {
+function decimal(value: number, digits: number): string {
+  if (!Number.isFinite(value)) throw new Error("Valor numérico inválido no WPML.");
   return value.toFixed(digits);
 }
 
 function countOccurrences(text: string, token: string): number {
   let count = 0;
-  let index = 0;
-  while (true) {
-    const next = text.indexOf(token, index);
-    if (next < 0) return count;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const found = text.indexOf(token, cursor);
+    if (found < 0) break;
     count += 1;
-    index = next + token.length;
+    cursor = found + token.length;
   }
+  return count;
 }
