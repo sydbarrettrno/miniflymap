@@ -1,11 +1,12 @@
-# Planejador funcional NVDroneMapping
+# Correção fiel ao NVDroneMapping
 
-- [x] Auditar GridPlanner e KmzExporter do projeto Android original.
-- [x] Registrar campos WPML, modelo de drone, câmera, altitude e ações de waypoint.
-- [x] Remover controles fictícios que não participam do fluxo real.
-- [x] Implementar captura de vértices por Pointer Events sobre o mapa.
-- [x] Implementar desfazer, limpeza e proteção do desenho fora do modo ativo.
-- [x] Portar geração de linhas de cobertura com interseções no polígono.
-- [x] Gerar KMZ com `wpmz/template.kml` e `wpmz/waylines.wpml`.
-- [x] Validar compilação TypeScript e build de produção.
-- [ ] Validar o arquivo no DJI Fly e em voo controlado; depende de dispositivo real.
+- [x] Reler a atividade Android, o fluxo de desenho e os modelos de missão.
+- [x] Remover iframe do Google Maps da área de captura.
+- [x] Implementar superfície cartográfica clicável sem bloquear os eventos.
+- [x] Garantir que cada toque/clique crie um vértice visível e contabilizado.
+- [x] Implementar desfazer, limpeza e validação mínima do polígono.
+- [x] Reutilizar o cálculo de rota dentro do polígono.
+- [x] Reutilizar a estrutura real template.kml/waylines.wpml.
+- [x] Remover ações e indicadores que não tenham efeito real.
+- [x] Executar testes TypeScript, build e verificação visual.
+- [ ] Validar a importação do KMZ em um DJI Fly real antes de uso operacional.
