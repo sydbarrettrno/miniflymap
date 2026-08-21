@@ -1,10 +1,11 @@
-# Correção do mapa real
+# Planejador funcional NVDroneMapping
 
-- [x] Auditar a API e as props do componente de mapa fornecido pelo template.
-- [x] Usar Google Maps como base cartográfica principal.
-- [x] Inicializar geolocalização automaticamente ao abrir a página.
-- [x] Exibir a posição padrão e atualizar o centro quando a localização for autorizada.
-- [x] Manter botão manual de localização com mensagens de permissão e erro.
-- [x] Conectar modo DESENHAR ao clique no Google Maps e renderizar a geometria da área.
-- [x] Manter camadas e revisão funcionando; satélite fica acessível no próprio Google Maps Embed.
-- [x] Executar TypeScript, build e screenshot final.
+- [x] Auditar GridPlanner e KmzExporter do projeto Android original.
+- [x] Registrar campos WPML, modelo de drone, câmera, altitude e ações de waypoint.
+- [x] Remover controles fictícios que não participam do fluxo real.
+- [x] Implementar captura de vértices por Pointer Events sobre o mapa.
+- [x] Implementar desfazer, limpeza e proteção do desenho fora do modo ativo.
+- [x] Portar geração de linhas de cobertura com interseções no polígono.
+- [x] Gerar KMZ com `wpmz/template.kml` e `wpmz/waylines.wpml`.
+- [x] Validar compilação TypeScript e build de produção.
+- [ ] Validar o arquivo no DJI Fly e em voo controlado; depende de dispositivo real.
