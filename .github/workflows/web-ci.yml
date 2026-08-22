@@ -1,8 +1,8 @@
-name: NV Drone Web CI
+name: MiniFlyMap Web CI
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "refactor/**"]
   pull_request:
     branches: [main]
 
@@ -12,13 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
-      - run: pnpm exec vitest run tests/corePlanner.test.ts
+      - run: pnpm exec vitest run --root . tests/corePlanner.test.ts
       - run: pnpm build
