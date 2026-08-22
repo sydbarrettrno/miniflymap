@@ -14,6 +14,8 @@ Planejador web de missões para mapeamento aéreo, com foco em DJI Mini 5 Pro.
 - armazenamento local de projetos no navegador;
 - mapa OpenStreetMap padrão (Mapnik) como visualização inicial, com alternância opcional para imagem de satélite Esri.
 
+O mapa padrão usa a mesma família de tiles OpenStreetMap/Mapnik da primeira versão do aplicativo, sem exigir chave de API ou faturamento. A imagem de satélite Esri permanece disponível pelo botão Mapa/Satélite.
+
 ## Desenvolvimento
 
 ```bash
