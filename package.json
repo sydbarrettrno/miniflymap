@@ -1,6 +1,7 @@
 {
-  "name": "nvdrone-mapping-preview",
+  "name": "miniflymap",
   "version": "1.0.0",
+  "description": "Planejador de missões para mapeamento aéreo com DJI Mini 5 Pro.",
   "type": "module",
   "license": "MIT",
   "scripts": {
