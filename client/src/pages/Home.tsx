@@ -118,7 +118,7 @@ export default function Home() {
   const [plan, setPlan] = useState<MissionPlan | null>(null);
   const [settings, setSettings] = useState<MissionSettings>({ ...DEFAULT_SETTINGS });
   const [mode, setMode] = useState<DrawMode>("idle");
-  const [satellite, setSatellite] = useState(true);
+  const [satellite, setSatellite] = useState(false);
   const [showReference, setShowReference] = useState(true);
   const [showBoundary, setShowBoundary] = useState(true);
   const [showRoute, setShowRoute] = useState(true);
