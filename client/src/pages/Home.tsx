@@ -331,7 +331,7 @@ export default function Home() {
   const downloadPart = async (partIndex: number) => {
     if (!plan) return;
     try {
-      const files = buildKmzFiles(plan, partIndex, "NV_Mapping");
+      const files = buildKmzFiles(plan, partIndex, "MiniFlyMap");
       const errors = validateWpmlFiles(files, plan.parts[partIndex].length);
       if (errors.length) throw new Error(errors.join(" "));
       const zip = new JSZip();
@@ -350,7 +350,7 @@ export default function Home() {
     try {
       const packageZip = new JSZip();
       for (let index = 0; index < plan.parts.length; index += 1) {
-        const files = buildKmzFiles(plan, index, "NV_Mapping");
+        const files = buildKmzFiles(plan, index, "MiniFlyMap");
         const errors = validateWpmlFiles(files, plan.parts[index].length);
         if (errors.length) throw new Error(`Parte ${index + 1}: ${errors.join(" ")}`);
         const kmz = new JSZip();
@@ -360,7 +360,7 @@ export default function Home() {
         packageZip.file(files.fileName, kmzBytes);
       }
       packageZip.file("LEIA-ME.txt", "Extraia este ZIP. Cada arquivo .kmz é uma parte independente da missão e deve ser usado individualmente no DJI Fly. Revise rota, altura, RTH, gimbal e ações de foto antes do voo.");
-      downloadBlob(await packageZip.generateAsync({ type: "blob", compression: "DEFLATE" }), "NV_Mapping_todas_as_partes.zip");
+      downloadBlob(await packageZip.generateAsync({ type: "blob", compression: "DEFLATE" }), "MiniFlyMap_todas_as_partes.zip");
       toast.success("Pacote com todas as partes gerado.");
     } catch (error) {
       toast.error(`Exportação bloqueada: ${messageOf(error)}`);
@@ -369,7 +369,7 @@ export default function Home() {
 
   const downloadPreview = () => {
     if (!plan) return toast.error("Gere o plano antes de exportar a prévia.");
-    downloadBlob(new Blob([buildPreviewKml(plan)], { type: "application/vnd.google-earth.kml+xml" }), "NV_Mapping_preview.kml");
+    downloadBlob(new Blob([buildPreviewKml(plan)], { type: "application/vnd.google-earth.kml+xml" }), "MiniFlyMap_preview.kml");
   };
 
   const route = plan?.waypoints ?? [];
@@ -378,7 +378,7 @@ export default function Home() {
   return (
     <main className="nv-app">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">NV</span><div><strong>NV DRONE MAPPING</strong><small>Planejamento fotogramétrico · DJI Mini 5 Pro</small></div></div>
+        <div className="brand"><span className="brand-mark">MF</span><div><strong>MiniFlyMap</strong><small>Planejamento fotogramétrico · DJI Mini 5 Pro</small></div></div>
         <div className="top-actions">
           <button className="btn secondary" onClick={() => setProjectsOpen(true)}><FolderOpen size={16} /> Projetos</button>
           <button className="btn secondary" onClick={openSave}><Save size={16} /> Salvar</button>
@@ -460,7 +460,7 @@ export default function Home() {
               <label><span>Fim da missão</span><select value={settings.finishAction} onChange={(event) => updateSettings("finishAction", event.target.value as MissionSettings["finishAction"])}><option value="goHome">Retornar para casa (RTH)</option><option value="noAction">Sem ação</option><option value="autoLand">Pousar</option><option value="gotoFirstWaypoint">Voltar ao primeiro waypoint</option></select></label>
               <label><span>Perda de sinal</span><select value={settings.rcLostAction} onChange={(event) => updateSettings("rcLostAction", event.target.value as MissionSettings["rcLostAction"])}><option value="goBack">Retornar (RTH)</option><option value="landing">Pousar</option><option value="hover">Pairar</option><option value="goContinue">Continuar missão</option></select></label>
             </div>
-            <div className="compat-note"><AlertTriangle size={16} /><span>Perfil Mini 5 Pro usa <b>droneEnumValue 68</b>, herdado do APK e editável. O DJI Fly deve ser a validação final antes do voo.</span></div>
+            <div className="compat-note"><AlertTriangle size={16} /><span>Perfil Mini 5 Pro usa <b>droneEnumValue 68</b>, configurável. A compatibilidade final deve ser validada no DJI Fly antes do voo.</span></div>
             <button className="btn primary generate" onClick={() => generate()}><Navigation size={17} /> APLICAR PLANO</button>
           </section>
 
@@ -487,7 +487,7 @@ export default function Home() {
 
       {projectsOpen && <Modal title="Projetos salvos" onClose={() => setProjectsOpen(false)} wide><div className="project-list">{projects.length === 0 ? <p className="empty">Nenhum projeto salvo neste navegador.</p> : projects.map((project) => <article key={`${project.name}-${project.savedAtMs}`}><div><strong>{project.name}</strong><span>{new Date(project.savedAtMs).toLocaleString("pt-BR")}</span><small>{project.boundary.length} vértices · {project.plan ? `${project.plan.stats.photoCount} waypoints` : "sem plano aplicado"}</small></div><div><button className="btn secondary" onClick={() => loadProject(project)}>Abrir</button><button className="icon-btn danger" onClick={() => removeProject(project)}><Trash2 size={16} /></button></div></article>)}</div></Modal>}
 
-      {guideOpen && <Modal title="Levar a missão ao DJI Fly" onClose={() => setGuideOpen(false)} wide><ol className="guide"><li>Desenhe ou importe uma referência e defina o quadro real de voo.</li><li>Gere o plano e confira no mapa a direção, início/fim, altura e cobertura.</li><li>Exporte a prévia KML e, se desejar, faça uma conferência adicional no Google Earth.</li><li>Exporte o KMZ DJI. Se houver mais de 190 waypoints, use cada parte separadamente.</li><li>No DJI Fly, crie e salve uma missão Waypoint temporária.</li><li>No armazenamento do celular/controle, localize o KMZ dessa missão e substitua-o pelo KMZ correspondente gerado pelo NV Drone Mapping. A pasta varia conforme Android, controle e versão do DJI Fly.</li><li>Reabra a missão no DJI Fly e confira visualmente todos os waypoints, altura relativa, RTH, perda de sinal, gimbal e ações de foto.</li><li>O primeiro voo deve ser em área aberta e pequena. A posição de decolagem deve ter cota semelhante à usada no planejamento porque a altura da missão é relativa ao ponto inicial.</li></ol><div className="guide-warning"><AlertTriangle size={18} /><span>O DJI Fly não oferece uma função oficial genérica de “Importar KMZ”. Este fluxo utiliza o arquivo de missão salvo pelo próprio DJI Fly e deve ser validado no aplicativo antes da decolagem.</span></div></Modal>}
+      {guideOpen && <Modal title="Levar a missão ao DJI Fly" onClose={() => setGuideOpen(false)} wide><ol className="guide"><li>Desenhe ou importe uma referência e defina o quadro real de voo.</li><li>Gere o plano e confira no mapa a direção, início/fim, altura e cobertura.</li><li>Exporte a prévia KML e, se desejar, faça uma conferência adicional no Google Earth.</li><li>Exporte o KMZ DJI. Se houver mais de 190 waypoints, use cada parte separadamente.</li><li>No DJI Fly, crie e salve uma missão Waypoint temporária.</li><li>No armazenamento do celular/controle, localize o KMZ dessa missão e substitua-o pelo KMZ correspondente gerado pelo MiniFlyMap. A pasta varia conforme Android, controle e versão do DJI Fly.</li><li>Reabra a missão no DJI Fly e confira visualmente todos os waypoints, altura relativa, RTH, perda de sinal, gimbal e ações de foto.</li><li>O primeiro voo deve ser em área aberta e pequena. A posição de decolagem deve ter cota semelhante à usada no planejamento porque a altura da missão é relativa ao ponto inicial.</li></ol><div className="guide-warning"><AlertTriangle size={18} /><span>O DJI Fly não oferece uma função oficial genérica de “Importar KMZ”. Este fluxo utiliza o arquivo de missão salvo pelo próprio DJI Fly e deve ser validado no aplicativo antes da decolagem.</span></div></Modal>}
 
       {layersOpen && <Modal title="Camadas do mapa" onClose={() => setLayersOpen(false)}><div className="layer-options"><label><input type="checkbox" checked={showReference} onChange={(e) => setShowReference(e.target.checked)} /> Referência importada</label><label><input type="checkbox" checked={showBoundary} onChange={(e) => setShowBoundary(e.target.checked)} /> Quadro de voo e vértices</label><label><input type="checkbox" checked={showRoute} onChange={(e) => setShowRoute(e.target.checked)} /> Rota e início/fim</label></div></Modal>}
 
